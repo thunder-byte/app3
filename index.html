@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8f7f4" />
+    <meta name="description" content="Find a mentor who gets where you want to go." />
+    <title>MentorshipMatch — Find your next step</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <a class="brand" href="#" aria-label="MentorshipMatch home">
+          <span class="brand-mark"><span></span><span></span><span></span></span>
+          <span>mentorship<span class="brand-light">match</span></span>
+        </a>
+        <div class="workspace-label">YOUR SPACE</div>
+        <nav class="main-nav" aria-label="Main navigation">
+          <button class="nav-link active" data-view="discover"><span class="nav-icon">⌕</span>Discover mentors</button>
+          <button class="nav-link" data-view="sessions"><span class="nav-icon">▣</span>My sessions <span class="nav-count" id="session-count">0</span></button>
+          <button class="nav-link" data-view="messages"><span class="nav-icon">▤</span>Messages<span class="notification-dot"></span></button>
+        </nav>
+        <div class="workspace-label second-label">PERSONAL</div>
+        <nav class="main-nav" aria-label="Personal navigation">
+          <button class="nav-link" data-view="profile"><span class="nav-icon">◉</span>My profile</button>
+          <button class="nav-link" data-view="admin"><span class="nav-icon">⚙</span>Admin panel</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="sidebar-note">
+            <div class="note-spark">✳</div>
+            <strong>Small steps add up.</strong>
+            <p>One conversation can change your whole perspective.</p>
+            <button class="note-link" data-view="discover">Find your person <span>↗</span></button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
+          <div class="breadcrumb">Your space <span>/</span> <strong id="crumb-label">Discover mentors</strong></div>
+          <div class="topbar-actions">
+            <button class="icon-button notification-button" aria-label="Notifications" id="notifications">♧<i></i></button>
+            <span class="topbar-divider"></span>
+            <button class="topbar-user" id="account-button" aria-label="Account menu" aria-haspopup="dialog"><span class="avatar avatar-you">YN</span><span class="topbar-user-copy"><span id="topbar-name">Your name</span><small id="account-role">Student account</small></span><span class="chevron">⌄</span></button>
+          </div>
+        </header>
+        <div id="view-container"></div>
+      </main>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="modal-backdrop" id="modal-root" aria-hidden="true"></div>
+    <div id="auth-root"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
