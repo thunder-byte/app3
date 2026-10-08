@@ -49,6 +49,23 @@ function showToast(message) {
   toast.textContent = message; toast.classList.add("show");
   clearTimeout(toastTimeout); toastTimeout = setTimeout(() => toast.classList.remove("show"), 2800);
 }
+function showVerificationLink(url, message) {
+  const feedback = document.getElementById("auth-feedback");
+  if (!feedback) return;
+  const linkUrl = new URL(url, window.location.origin);
+  if (linkUrl.origin !== window.location.origin || linkUrl.pathname !== "/verify-email" || !linkUrl.searchParams.has("token")) {
+    showToast("The server returned an invalid verification link.");
+    return;
+  }
+  feedback.replaceChildren();
+  const text = document.createElement("p");
+  text.textContent = message;
+  const link = document.createElement("a");
+  link.href = `${linkUrl.pathname}${linkUrl.search}`;
+  link.textContent = "Verify email for demo";
+  feedback.append(text, link);
+  feedback.hidden = false;
+}
 function normalizeEmail(email) { return String(email || "").trim().toLowerCase(); }
 function emailAlreadyInUse(email, exceptUserId = null) {
   const normalized = normalizeEmail(email);
@@ -151,7 +168,7 @@ function showAuth(mode = "login") {
   const authRoot = document.getElementById("auth-root");
   authRoot.classList.add("active");
   const isSignup = mode === "signup";
-  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There’s more than one way to get where you’re going.</h1><p>Find people who’ll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Pick up where your next step begins."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button>${!isSignup ? `<button class="button-quiet auth-resend" type="button" data-resend-verification hidden>Resend verification email</button>` : ""}<div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div><p style="text-align:center;margin-top:17px;font-size:9px">We’ll email you a verification link. Account passwords are stored as salted hashes on the server.</p></form></section></div>`;
+  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There’s more than one way to get where you’re going.</h1><p>Find people who’ll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Pick up where your next step begins."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button>${!isSignup ? `<button class="button-quiet auth-resend" type="button" data-resend-verification hidden>Resend verification email</button>` : ""}<div id="auth-feedback" class="auth-feedback" hidden></div><div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div><p style="text-align:center;margin-top:17px;font-size:9px">Demo mode shows a local verification link; Resend mode emails the link.</p></form></section></div>`;
   document.querySelector("[data-auth-switch]").addEventListener("click", () => showAuth(isSignup ? "login" : "signup"));
 }
 document.addEventListener("click", async event => {
@@ -202,6 +219,7 @@ document.addEventListener("click", async event => {
       const response = await fetch("/api/auth/resend-verification", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
       const payload = await response.json();
       if (!response.ok) { showToast(payload.error || "Unable to resend the verification email."); return; }
+      if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo link (no email sent). It expires in one hour.");
       showToast(payload.message);
     } catch (error) {
       console.error("Unable to resend verification email", error);
@@ -293,6 +311,7 @@ document.addEventListener("submit", async event => {
         const payload = await result.json();
         if (!result.ok) { showToast(payload.error || "Unable to create your account."); return; }
         showAuth("login");
+        if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo verification link — no email was sent. Open this link to finish account setup.");
         showToast(payload.message || "Check your inbox for a verification link.");
         return;
       } else {

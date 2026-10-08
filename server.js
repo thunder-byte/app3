@@ -21,6 +21,7 @@ const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || path.
 const accountsPath = path.join(dataDirectory, "accounts.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || `http://localhost:${port}`).replace(/\/$/, "");
+const emailDeliveryMode = process.env.EMAIL_DELIVERY_MODE || "demo";
 const verificationLifetimeMs = 60 * 60 * 1000;
 const maxRequestBytes = 16 * 1024;
 let accounts = [];
@@ -155,6 +156,17 @@ async function sendVerificationEmail(email, name, token) {
   }
 }
 
+function verificationUrlFor(token) {
+  return `${appOrigin}/verify-email?token=${encodeURIComponent(token)}`;
+}
+
+async function deliverVerification(email, name, token) {
+  if (emailDeliveryMode === "demo") return { demoVerificationUrl: verificationUrlFor(token) };
+  if (emailDeliveryMode !== "resend") throw new Error("EMAIL_DELIVERY_MODE must be either demo or resend.");
+  await sendVerificationEmail(email, name, token);
+  return {};
+}
+
 async function handleRegister(request, response) {
   const body = await readJson(request);
   const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -196,13 +208,18 @@ async function handleRegister(request, response) {
   accounts.push(account);
   await saveAccounts();
   try {
-    await sendVerificationEmail(email, name, token);
+    const delivery = await deliverVerification(email, name, token);
+    sendJson(response, 202, {
+      message: delivery.demoVerificationUrl
+        ? "Demo account created. Use the verification link below; no email was sent."
+        : "Check your inbox for an email verification link.",
+      ...delivery
+    });
   } catch (error) {
     accounts = accounts.filter(item => item.id !== account.id);
     await saveAccounts();
     throw error;
   }
-  sendJson(response, 202, { message: "Check your inbox for an email verification link." });
 }
 
 async function handleLogin(request, response) {
@@ -246,14 +263,19 @@ async function handleResendVerification(request, response) {
   account.verificationExpiresAt = Date.now() + verificationLifetimeMs;
   await saveAccounts();
   try {
-    await sendVerificationEmail(email, account.name, token);
+    const delivery = await deliverVerification(email, account.name, token);
+    sendJson(response, 200, {
+      message: delivery.demoVerificationUrl
+        ? "Demo verification link ready; no email was sent."
+        : "A new verification link has been sent.",
+      ...delivery
+    });
   } catch (error) {
     account.verificationTokenHash = previousTokenHash;
     account.verificationExpiresAt = previousExpiry;
     await saveAccounts();
     throw error;
   }
-  sendJson(response, 200, { message: "A new verification link has been sent." });
 }
 
 async function handleVerification(url, response) {
