@@ -358,3 +358,4 @@ loadAccounts().then(() => {
   console.error("Unable to load account store:", error);
   process.exitCode = 1;
 });
+_

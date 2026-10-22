@@ -347,3 +347,4 @@ modalRoot.addEventListener("click", event => { if (event.target === modalRoot) c
 document.addEventListener("keydown", event => { if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal(); });
 render();
 showAuth("login");
+_
