@@ -10,7 +10,9 @@ const savedBookings = readStore("mm-bookings", []);
 const savedReviews = readStore("mm-reviews", {});
 const savedReports = readStore("mm-reports", []);
 const savedUser = readStore("mm-user", { name: "Your name", email: "", interests: "", goal: "" });
+const savedAuthUsers = readStore("mm-auth-users", []);
 const savedUsersHaveClientCredentials = savedUsers.some(user => user.passwordSalt || user.passwordHash);
+let authUsers = savedAuthUsers;
 const state = {
   view: "discover",
   user: legacyDemoEmails.has(savedUser.email)
@@ -33,6 +35,7 @@ function persist() {
     localStorage.setItem("mm-reviews", JSON.stringify(state.reviews));
     localStorage.setItem("mm-users", JSON.stringify(state.users));
     localStorage.setItem("mm-reports", JSON.stringify(state.reports));
+    localStorage.setItem("mm-auth-users", JSON.stringify(authUsers));
   } catch (error) { console.error("Unable to save MentorshipMatch data", error); showToast("Your changes could not be saved in this browser."); }
 }
 if (state.user !== savedUser || state.bookings.length !== savedBookings.length || Object.keys(state.reviews).length !== Object.keys(savedReviews).length || state.users.length !== savedUsers.length || state.reports.length !== savedReports.length || savedUsersHaveClientCredentials) persist();
@@ -67,6 +70,11 @@ function showVerificationLink(url, message) {
   feedback.hidden = false;
 }
 function normalizeEmail(email) { return String(email || "").trim().toLowerCase(); }
+async function hashPassword(password) {
+  const bytes = new TextEncoder().encode(password);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 function emailAlreadyInUse(email, exceptUserId = null) {
   const normalized = normalizeEmail(email);
   return state.users.some(user => user.id !== exceptUserId && normalizeEmail(user.email) === normalized);
@@ -141,6 +149,7 @@ function openModal(title, subtitle, body) {
 function closeModal() { modalRoot.classList.remove("open"); modalRoot.setAttribute("aria-hidden", "true"); modalRoot.innerHTML = ""; }
 function deleteMemberData(member) {
   state.users = state.users.filter(user => user.id !== member.id);
+  authUsers = authUsers.filter(user => user.id !== member.id);
   state.bookings = state.bookings.filter(booking => booking.mentorId !== member.id && booking.requesterEmail !== member.email);
   state.reviews = Object.fromEntries(Object.entries(state.reviews).filter(([mentorId, review]) => mentorId !== member.id && review.reviewerEmail !== member.email));
   state.reports = state.reports.filter(report => report.userId !== member.id);
@@ -214,17 +223,7 @@ document.addEventListener("click", async event => {
     const form = document.getElementById("auth-form");
     const email = normalizeEmail(form.elements.email.value);
     if (!email) { showToast("Enter your email address first."); return; }
-    target.disabled = true;
-    try {
-      const response = await fetch("/api/auth/resend-verification", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
-      const payload = await response.json();
-      if (!response.ok) { showToast(payload.error || "Unable to resend the verification email."); return; }
-      if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo link (no email sent). It expires in one hour.");
-      showToast(payload.message);
-    } catch (error) {
-      console.error("Unable to resend verification email", error);
-      showToast("Could not reach the account server.");
-    } finally { target.disabled = false; }
+    showToast("This static demo does not send verification emails.");
     return;
   }
   if (target.hasAttribute("data-request-delete-own")) {
@@ -245,6 +244,7 @@ document.addEventListener("click", async event => {
     const email = state.user.email;
     const ownMember = state.users.find(user => user.email === email);
     state.users = state.users.filter(user => user.email !== email);
+    authUsers = authUsers.filter(user => normalizeEmail(user.email) !== normalizeEmail(email));
     if (ownMember) state.reports = state.reports.filter(report => report.userId !== ownMember.id);
     state.bookings = [];
     state.reviews = {};
@@ -303,37 +303,43 @@ document.addEventListener("submit", async event => {
     submitButton.disabled = true;
     try {
       if (data.get("name")) {
-        const result = await fetch("/api/auth/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: data.get("name").trim(), email, password: data.get("password"), role: data.get("role") })
-        });
-        const payload = await result.json();
-        if (!result.ok) { showToast(payload.error || "Unable to create your account."); return; }
-        showAuth("login");
-        if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo verification link — no email was sent. Open this link to finish account setup.");
-        showToast(payload.message || "Check your inbox for a verification link.");
-        return;
-      } else {
-        const result = await fetch("/api/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password: data.get("password") })
-        });
-        const payload = await result.json();
-        if (!result.ok) {
-          if (payload.code === "EMAIL_NOT_VERIFIED") form.querySelector("[data-resend-verification]").hidden = false;
-          showToast(payload.error || "Unable to sign in.");
+        const existingAuthUser = authUsers.find(user => normalizeEmail(user.email) === email);
+        if (existingAuthUser || emailAlreadyInUse(email)) {
+          showToast("An account already exists with that email.");
           return;
         }
-        state.user = payload.user;
-        const memberIndex = state.users.findIndex(user => user.id === payload.user.id);
-        if (memberIndex === -1) state.users.push(payload.user);
-        else state.users[memberIndex] = payload.user;
+        const passwordHash = await hashPassword(data.get("password"));
+        const id = `member-${Date.now()}`;
+        const user = {
+          id,
+          name: data.get("name").trim(),
+          email,
+          role: data.get("role"),
+          field: "",
+          school: "",
+          year: "",
+          interests: "",
+          goal: "",
+          status: "Active"
+        };
+        authUsers.push({ id, email, passwordHash });
+        state.users.push(user);
+        showAuth("login");
+        persist();
+        showToast("Account created. Sign in to continue.");
+        return;
+      } else {
+        const passwordHash = await hashPassword(data.get("password"));
+        const authUser = authUsers.find(user => normalizeEmail(user.email) === email && user.passwordHash === passwordHash);
+        if (!authUser) {
+          showToast("Email or password is incorrect.");
+          return;
+        }
+        state.user = state.users.find(user => user.id === authUser.id) || { ...authUser, name: email.split("@")[0] };
       }
     } catch (error) {
       console.error("Account authentication request failed", error);
-      showToast("Could not reach the account server. Start it with npm start and try again.");
+      showToast("Unable to process your account in this browser.");
       return;
     } finally {
       submitButton.disabled = false;
@@ -347,4 +353,3 @@ modalRoot.addEventListener("click", event => { if (event.target === modalRoot) c
 document.addEventListener("keydown", event => { if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal(); });
 render();
 showAuth("login");
-_
