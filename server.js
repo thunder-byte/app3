@@ -351,11 +351,10 @@ loadAccounts().then(() => {
       if (!response.headersSent) sendJson(response, error.status || 500, { error: error.status ? error.message : "The request could not be completed." });
       else response.destroy(error);
     });
-  }).listen(port, "127.0.0.1", () => {
+  }).listen(port, "0.0.0.0", () => {
     console.log(`MentorshipMatch listening at ${appOrigin}`);
   });
 }).catch(error => {
   console.error("Unable to load account store:", error);
   process.exitCode = 1;
 });
-_

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: mentorshipmatch
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: EMAIL_DELIVERY_MODE
+        value: demo
+      - key: APP_ORIGIN
+        sync: false
