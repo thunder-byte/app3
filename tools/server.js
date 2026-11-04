@@ -6,7 +6,8 @@ const crypto = require("node:crypto");
 const { promisify } = require("node:util");
 
 const pbkdf2 = promisify(crypto.pbkdf2);
-const root = __dirname;
+const root = path.resolve(__dirname, "..");
+const staticRoot = path.join(root, "public");
 const envFile = path.join(root, ".env");
 if (fsSync.existsSync(envFile)) {
   const envContent = fsSync.readFileSync(envFile, "utf8");
@@ -306,8 +307,8 @@ async function serveStatic(url, response) {
     response.end("Not found");
     return;
   }
-  const fullPath = path.resolve(root, `.${requestedPath}`);
-  if (!fullPath.startsWith(`${root}${path.sep}`)) {
+  const fullPath = path.resolve(staticRoot, `.${requestedPath}`);
+  if (!fullPath.startsWith(`${staticRoot}${path.sep}`)) {
     response.writeHead(403);
     response.end("Forbidden");
     return;
