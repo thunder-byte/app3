@@ -4,5 +4,8 @@
   "private": true,
   "scripts": {
     "start": "node tools/server.js"
+  },
+  "dependencies": {
+    "@vercel/postgres": "^0.10.0"
   }
 }

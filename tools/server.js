@@ -4,6 +4,7 @@ const fsSync = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { promisify } = require("node:util");
+const { sql } = process.env.POSTGRES_URL ? require("@vercel/postgres") : { sql: null };
 
 const pbkdf2 = promisify(crypto.pbkdf2);
 const root = path.resolve(__dirname, "..");
@@ -39,6 +40,18 @@ const mimeTypes = {
 };
 
 async function loadAccounts() {
+  if (sql) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS mentorship_accounts (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        account JSONB NOT NULL
+      )
+    `;
+    const result = await sql`SELECT account FROM mentorship_accounts`;
+    accounts = result.rows.map(row => row.account);
+    return;
+  }
   await fs.mkdir(dataDirectory, { recursive: true });
   try {
     const content = await fs.readFile(accountsPath, "utf8");
@@ -53,6 +66,25 @@ async function loadAccounts() {
 
 function saveAccounts() {
   writeQueue = writeQueue.then(async () => {
+    if (sql) {
+      const storedAccounts = await sql`SELECT id FROM mentorship_accounts`;
+      const accountIds = new Set(accounts.map(account => account.id));
+      for (const stored of storedAccounts.rows) {
+        if (!accountIds.has(stored.id)) {
+          await sql`DELETE FROM mentorship_accounts WHERE id = ${stored.id}`;
+        }
+      }
+      for (const account of accounts) {
+        await sql`
+          INSERT INTO mentorship_accounts (id, email, account)
+          VALUES (${account.id}, ${account.email}, ${JSON.stringify(account)})
+          ON CONFLICT (id) DO UPDATE SET
+            email = EXCLUDED.email,
+            account = EXCLUDED.account
+        `;
+      }
+      return;
+    }
     const temporaryPath = `${accountsPath}.tmp`;
     await fs.writeFile(temporaryPath, JSON.stringify(accounts, null, 2), { mode: 0o600 });
     await fs.rename(temporaryPath, accountsPath);
@@ -330,6 +362,11 @@ async function serveStatic(url, response) {
 
 async function handleRequest(request, response) {
   const url = new URL(request.url, appOrigin);
+  if (request.method === "GET" && url.pathname === "/api/accounts") {
+    response.setHeader?.("Access-Control-Allow-Origin", "*");
+    sendJson(response, 200, { users: accounts.filter(account => account.status === "Active").map(publicAccount) });
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/auth/register") {
     if (!allowRequest(request, response, "register", 5, 60 * 60 * 1000)) return;
     return handleRegister(request, response);

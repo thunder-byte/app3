@@ -28,6 +28,23 @@ const viewContainer = document.getElementById("view-container");
 const modalRoot = document.getElementById("modal-root");
 let toastTimeout;
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+async function syncCommunityAccounts() {
+  try {
+    const response = await fetch("/api/accounts");
+    if (!response.ok) return;
+    const payload = await response.json();
+    const sharedUsers = payload.users || [];
+    const byId = new Map(sharedUsers.map(user => [user.id, user]));
+    for (const localUser of state.users) {
+      if (!byId.has(localUser.id) && !legacyDemoIds.has(localUser.id)) byId.set(localUser.id, localUser);
+    }
+    state.users = [...byId.values()];
+    persist();
+    render();
+  } catch (error) {
+    console.error("Unable to load shared community accounts", error);
+  }
+}
 function persist() {
   try {
     localStorage.setItem("mm-user", JSON.stringify(state.user));
@@ -303,39 +320,32 @@ document.addEventListener("submit", async event => {
     submitButton.disabled = true;
     try {
       if (data.get("name")) {
-        const existingAuthUser = authUsers.find(user => normalizeEmail(user.email) === email);
-        if (existingAuthUser || emailAlreadyInUse(email)) {
-          showToast("An account already exists with that email.");
-          return;
-        }
-        const passwordHash = await hashPassword(data.get("password"));
-        const id = `member-${Date.now()}`;
-        const user = {
-          id,
-          name: data.get("name").trim(),
-          email,
-          role: data.get("role"),
-          field: "",
-          school: "",
-          year: "",
-          interests: "",
-          goal: "",
-          status: "Active"
-        };
-        authUsers.push({ id, email, passwordHash });
-        state.users.push(user);
+        const response = await fetch("/api/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: data.get("name").trim(), email, password: data.get("password"), role: data.get("role") })
+        });
+        const payload = await response.json();
+        if (!response.ok) { showToast(payload.error || "Unable to create your account."); return; }
         showAuth("login");
-        persist();
-        showToast("Account created. Sign in to continue.");
+        if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo verification link - no email was sent.");
+        showToast(payload.message || "Account created.");
+        await syncCommunityAccounts();
         return;
       } else {
-        const passwordHash = await hashPassword(data.get("password"));
-        const authUser = authUsers.find(user => normalizeEmail(user.email) === email && user.passwordHash === passwordHash);
-        if (!authUser) {
-          showToast("Email or password is incorrect.");
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password: data.get("password") })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          if (payload.code === "EMAIL_NOT_VERIFIED") form.querySelector("[data-resend-verification]").hidden = false;
+          showToast(payload.error || "Unable to sign in.");
           return;
         }
-        state.user = state.users.find(user => user.id === authUser.id) || { ...authUser, name: email.split("@")[0] };
+        state.user = payload.user;
+        await syncCommunityAccounts();
       }
     } catch (error) {
       console.error("Account authentication request failed", error);
@@ -353,3 +363,4 @@ modalRoot.addEventListener("click", event => { if (event.target === modalRoot) c
 document.addEventListener("keydown", event => { if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal(); });
 render();
 showAuth("login");
+syncCommunityAccounts();
