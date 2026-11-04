@@ -17,10 +17,12 @@ if (fsSync.existsSync(envFile)) {
     }
   }
 }
-const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || path.join(root, "data"));
+const vercelDataDirectory = process.env.VERCEL ? "/tmp/mentorshipmatch-data" : null;
+const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || vercelDataDirectory || path.join(root, "data"));
 const accountsPath = path.join(dataDirectory, "accounts.json");
 const port = Number(process.env.PORT || 3000);
-const appOrigin = (process.env.APP_ORIGIN || `http://localhost:${port}`).replace(/\/$/, "");
+const defaultAppOrigin = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`;
+const appOrigin = (process.env.APP_ORIGIN || defaultAppOrigin).replace(/\/$/, "");
 const emailDeliveryMode = process.env.EMAIL_DELIVERY_MODE || "demo";
 const verificationLifetimeMs = 60 * 60 * 1000;
 const maxRequestBytes = 16 * 1024;
@@ -344,17 +346,33 @@ async function handleRequest(request, response) {
   sendJson(response, 404, { error: "Not found." });
 }
 
-loadAccounts().then(() => {
-  http.createServer((request, response) => {
+let accountsReady = null;
+
+function requestErrorHandler(request, response) {
     handleRequest(request, response).catch(error => {
       console.error("Request failed:", error);
       if (!response.headersSent) sendJson(response, error.status || 500, { error: error.status ? error.message : "The request could not be completed." });
       else response.destroy(error);
     });
-  }).listen(port, "0.0.0.0", () => {
+}
+
+function ensureAccountsLoaded() {
+  if (!accountsReady) accountsReady = loadAccounts();
+  return accountsReady;
+}
+
+if (require.main === module) {
+  ensureAccountsLoaded().then(() => {
+  http.createServer(requestErrorHandler).listen(port, "0.0.0.0", () => {
     console.log(`MentorshipMatch listening at ${appOrigin}`);
   });
 }).catch(error => {
   console.error("Unable to load account store:", error);
   process.exitCode = 1;
 });
+}
+
+module.exports = async function vercelHandler(request, response) {
+  await ensureAccountsLoaded();
+  return requestErrorHandler(request, response);
+};

@@ -13,6 +13,17 @@ Accounts are stored in `data/accounts.json` on the server. Passwords are stored 
 
 Email verification links expire after one hour. In demo mode, the link is shown on screen and does not prove mailbox ownership. In Resend mode, an email address is verified only after the recipient opens the one-time link delivered to that mailbox.
 
+## Deploy to Vercel
+
+1. Push the repository to GitHub and import it at https://vercel.com/new.
+2. Vercel should detect `vercel.json` and deploy it as a Node.js site.
+3. Keep `EMAIL_DELIVERY_MODE=demo`, or configure Resend variables for email delivery.
+4. Optionally set `APP_ORIGIN` after deployment to the final Vercel URL.
+
+Vercel provides `VERCEL_URL` automatically, so verification links can be generated without manual configuration.
+
+The included file account store is temporary on Vercel and may reset between deployments or serverless executions. Connect a hosted database before launching a real service.
+
 ## Deploy to Render
 
 1. Push this repository to GitHub.
