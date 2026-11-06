@@ -92,7 +92,8 @@ async function loadAccounts() {
     `;
     await sql`DELETE FROM mentorship_accounts WHERE email = ${emailLookup("test@gmail.com")}`;
     const result = await sql`SELECT account FROM mentorship_accounts`;
-    accounts = result.map(row => decryptAccountData(row.account)).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    accounts = rows.map(row => decryptAccountData(row.account)).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
     return;
   }
   await fs.mkdir(dataDirectory, { recursive: true });
@@ -113,7 +114,8 @@ async function loadAccounts() {
 function saveAccounts() {
   writeQueue = writeQueue.then(async () => {
     if (sql) {
-      const storedAccounts = await sql`SELECT id FROM mentorship_accounts`;
+      const storedResult = await sql`SELECT id FROM mentorship_accounts`;
+      const storedAccounts = Array.isArray(storedResult) ? storedResult : (storedResult.rows || []);
       const accountIds = new Set(accounts.map(account => account.id));
       for (const stored of storedAccounts) {
         if (!accountIds.has(stored.id)) {
@@ -461,9 +463,22 @@ module.exports = async function vercelHandler(request, response) {
   try {
     accountEncryptionKey = getAccountEncryptionKey();
     await ensureAccountsLoaded();
-    return requestErrorHandler(request, response);
+    await handleRequest(request, response).catch(error => {
+      console.error("Request failed:", error);
+      if (!response.headersSent) {
+        sendJson(response, error.status || 500, {
+          error: error.status ? error.message : "The request could not be completed."
+        });
+      } else {
+        response.destroy(error);
+      }
+    });
   } catch (error) {
     console.error("Unable to initialize account storage:", error);
-    sendJson(response, 500, { error: "Account storage could not be initialized." });
+    if (!response.headersSent) {
+      sendJson(response, 500, { error: "Account storage could not be initialized." });
+    } else {
+      response.destroy(error);
+    }
   }
 };
