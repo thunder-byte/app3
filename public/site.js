@@ -57,7 +57,7 @@ async function syncCommunityAccounts() {
   try {
     const response = await fetch("/api/accounts");
     if (!response.ok) return;
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     const sharedUsers = (payload.users || []).filter(user => !legacyDemoEmails.has(String(user.email || "").trim().toLowerCase()));
     const byId = new Map(sharedUsers.map(user => [user.id, user]));
     for (const localUser of state.users) {
@@ -113,6 +113,16 @@ function showVerificationLink(url, message) {
   feedback.hidden = false;
 }
 function normalizeEmail(email) { return String(email || "").trim().toLowerCase(); }
+async function readJsonResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  const text = await response.text();
+  if (!contentType.includes("application/json")) {
+    const pageTitle = text.match(/<title[^>]*>(.*?)<\/title>/i)?.[1]?.trim();
+    throw new Error(pageTitle || text.trim().slice(0, 160) || `Server returned HTTP ${response.status} instead of JSON.`);
+  }
+  try { return JSON.parse(text); }
+  catch { throw new Error(`Server returned invalid JSON (HTTP ${response.status}).`); }
+}
 async function hashPassword(password) {
   const bytes = new TextEncoder().encode(password);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -351,7 +361,7 @@ document.addEventListener("submit", async event => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: data.get("name").trim(), email, password: data.get("password"), role: data.get("role") })
         });
-        const payload = await response.json();
+        const payload = await readJsonResponse(response);
         if (!response.ok) {
           logTestError("Registration", payload.error || `HTTP ${response.status}`);
           showToast(payload.error || "Unable to create your account.");
@@ -368,7 +378,7 @@ document.addEventListener("submit", async event => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password: data.get("password") })
         });
-        const payload = await response.json();
+        const payload = await readJsonResponse(response);
         if (!response.ok) {
           logTestError("Login", payload.error || `HTTP ${response.status}`);
           if (payload.code === "EMAIL_NOT_VERIFIED") form.querySelector("[data-resend-verification]").hidden = false;
