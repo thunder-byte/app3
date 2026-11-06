@@ -1,5 +1,30 @@
 const legacyDemoIds = new Set(["maya", "jordan", "amara", "diego", "priya", "alex", "sam", "nina", "student"]);
 const legacyDemoEmails = new Set(["maya.chen@example.com", "jordan.lee@example.com", "amara.okafor@example.com", "diego.r@example.com", "taylor.kim@example.com", "jamie.davis@example.com", "test@gmail.com"]);
+const TEST_ERROR_LOG = true; // Set to false for the final build.
+
+let debugLogPanel;
+let debugLogEntries;
+function logTestError(source, error) {
+  if (!TEST_ERROR_LOG) return;
+  const detail = error && error.message ? error.message : String(error || "Unknown error");
+  const timestamp = new Date().toLocaleTimeString();
+  const entry = document.createElement("div");
+  entry.textContent = `[${timestamp}] ${source}: ${detail}`;
+  debugLogEntries.append(entry);
+  while (debugLogEntries.children.length > 20) debugLogEntries.firstElementChild.remove();
+  debugLogEntries.scrollTop = debugLogEntries.scrollHeight;
+}
+
+if (TEST_ERROR_LOG) {
+  debugLogPanel = document.createElement("div");
+  debugLogPanel.className = "debug-log-panel";
+  debugLogPanel.innerHTML = '<div class="debug-log-header"><strong>Test error log</strong><button type="button">Clear</button></div><div class="debug-log-entries"></div>';
+  document.body.append(debugLogPanel);
+  debugLogEntries = debugLogPanel.querySelector(".debug-log-entries");
+  debugLogPanel.querySelector("button").addEventListener("click", () => debugLogEntries.replaceChildren());
+  window.addEventListener("error", event => logTestError("Window", event.error || event.message));
+  window.addEventListener("unhandledrejection", event => logTestError("Promise", event.reason));
+}
 
 const readStore = (key, fallback) => {
   try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }
@@ -43,6 +68,7 @@ async function syncCommunityAccounts() {
     render();
   } catch (error) {
     console.error("Unable to load shared community accounts", error);
+    logTestError("Accounts sync", error);
   }
 }
 function persist() {
@@ -326,7 +352,11 @@ document.addEventListener("submit", async event => {
           body: JSON.stringify({ name: data.get("name").trim(), email, password: data.get("password"), role: data.get("role") })
         });
         const payload = await response.json();
-        if (!response.ok) { showToast(payload.error || "Unable to create your account."); return; }
+        if (!response.ok) {
+          logTestError("Registration", payload.error || `HTTP ${response.status}`);
+          showToast(payload.error || "Unable to create your account.");
+          return;
+        }
         showAuth("login");
         if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo verification link - no email was sent.");
         showToast(payload.message || "Account created.");
@@ -340,6 +370,7 @@ document.addEventListener("submit", async event => {
         });
         const payload = await response.json();
         if (!response.ok) {
+          logTestError("Login", payload.error || `HTTP ${response.status}`);
           if (payload.code === "EMAIL_NOT_VERIFIED") form.querySelector("[data-resend-verification]").hidden = false;
           showToast(payload.error || "Unable to sign in.");
           return;
@@ -349,6 +380,7 @@ document.addEventListener("submit", async event => {
       }
     } catch (error) {
       console.error("Account authentication request failed", error);
+      logTestError("Authentication", error);
       showToast(error && error.message ? error.message : "Unable to process your account in this browser.");
       return;
     } finally {
