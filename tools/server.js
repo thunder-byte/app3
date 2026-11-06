@@ -33,12 +33,13 @@ const appOrigin = (process.env.APP_ORIGIN || defaultAppOrigin).replace(/\/$/, ""
 const emailDeliveryMode = process.env.EMAIL_DELIVERY_MODE || "demo";
 const verificationLifetimeMs = 60 * 60 * 1000;
 const maxRequestBytes = 16 * 1024;
-const accountEncryptionKey = (() => {
+function getAccountEncryptionKey() {
   const configuredKey = process.env.ACCOUNTS_ENCRYPTION_KEY;
   if (!configuredKey) throw new Error("ACCOUNTS_ENCRYPTION_KEY is required to encrypt account data.");
   if (!/^[a-f0-9]{64}$/i.test(configuredKey)) throw new Error("ACCOUNTS_ENCRYPTION_KEY must be 64 hexadecimal characters.");
   return Buffer.from(configuredKey, "hex");
-})();
+}
+let accountEncryptionKey;
 let accounts = [];
 let writeQueue = Promise.resolve();
 const requestWindows = new Map();
@@ -91,7 +92,7 @@ async function loadAccounts() {
     `;
     await sql`DELETE FROM mentorship_accounts WHERE email = ${emailLookup("test@gmail.com")}`;
     const result = await sql`SELECT account FROM mentorship_accounts`;
-    accounts = result.rows.map(row => decryptAccountData(row.account)).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
+    accounts = result.map(row => decryptAccountData(row.account)).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
     return;
   }
   await fs.mkdir(dataDirectory, { recursive: true });
@@ -114,7 +115,7 @@ function saveAccounts() {
     if (sql) {
       const storedAccounts = await sql`SELECT id FROM mentorship_accounts`;
       const accountIds = new Set(accounts.map(account => account.id));
-      for (const stored of storedAccounts.rows) {
+      for (const stored of storedAccounts) {
         if (!accountIds.has(stored.id)) {
           await sql`DELETE FROM mentorship_accounts WHERE id = ${stored.id}`;
         }
@@ -445,6 +446,7 @@ function ensureAccountsLoaded() {
 }
 
 if (require.main === module) {
+  accountEncryptionKey = getAccountEncryptionKey();
   ensureAccountsLoaded().then(() => {
   http.createServer(requestErrorHandler).listen(port, "0.0.0.0", () => {
     console.log(`MentorshipMatch listening at ${appOrigin}`);
@@ -456,6 +458,12 @@ if (require.main === module) {
 }
 
 module.exports = async function vercelHandler(request, response) {
-  await ensureAccountsLoaded();
-  return requestErrorHandler(request, response);
+  try {
+    accountEncryptionKey = getAccountEncryptionKey();
+    await ensureAccountsLoaded();
+    return requestErrorHandler(request, response);
+  } catch (error) {
+    console.error("Unable to initialize account storage:", error);
+    sendJson(response, 500, { error: "Account storage could not be initialized." });
+  }
 };
