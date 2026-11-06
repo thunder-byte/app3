@@ -339,7 +339,11 @@ async function handleRequest(request, response) {
   const url = new URL(request.url, appOrigin);
   if (request.method === "GET" && url.pathname === "/api/accounts") {
     response.setHeader?.("Access-Control-Allow-Origin", "*");
-    sendJson(response, 200, { users: [] });
+    const users = accounts
+      .filter(account => account.role === "Mentor" && account.status !== "Suspended")
+      .map(publicAccount)
+      .filter(account => !hiddenDemoEmails.has(account.email));
+    sendJson(response, 200, { users });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/auth/register") {
