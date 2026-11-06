@@ -98,7 +98,6 @@ function showToast(message) {
 function showVerificationLink(url, message) {
   const feedback = document.getElementById("auth-feedback");
   if (!feedback) return;
-  const linkUrl = new URL(url, window.location.origin);
   if (linkUrl.origin !== window.location.origin || linkUrl.pathname !== "/verify-email" || !linkUrl.searchParams.has("token")) {
     showToast("The server returned an invalid verification link.");
     return;
@@ -276,7 +275,17 @@ document.addEventListener("click", async event => {
     const form = document.getElementById("auth-form");
     const email = normalizeEmail(form.elements.email.value);
     if (!email) { showToast("Enter your email address first."); return; }
-    showToast("This static demo does not send verification emails.");
+    fetch("/api/auth/resend-verification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    }).then(readJsonResponse).then(payload => {
+      if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo verification link - no email was sent.");
+      else showToast(payload.message || "Verification email sent.");
+    }).catch(error => {
+      logTestError("Resend verification", error);
+      showToast(error.message || "Unable to resend the verification email.");
+    });
     return;
   }
   if (target.hasAttribute("data-request-delete-own")) {
