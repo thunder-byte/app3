@@ -179,12 +179,12 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }
 
-async function sendVerificationEmail(email, name, token) {
+async function sendVerificationEmail(email, name, token, origin) {
   const apiKey = process.env.RESEND_API_KEY;
   const sender = process.env.RESEND_FROM;
   if (!apiKey || !sender) throw new Error("Email delivery is not configured. Set RESEND_API_KEY and RESEND_FROM.");
 
-  const verificationUrl = `${appOrigin}/verify-email?token=${encodeURIComponent(token)}`;
+  const verificationUrl = `${origin}/verify-email?token=${encodeURIComponent(token)}`;
   const safeName = escapeHtml(name);
   const result = await fetch(process.env.RESEND_API_URL || "https://api.resend.com/emails", {
     method: "POST",
@@ -203,14 +203,23 @@ async function sendVerificationEmail(email, name, token) {
   }
 }
 
-function verificationUrlFor(token) {
-  return `${appOrigin}/verify-email?token=${encodeURIComponent(token)}`;
+function verificationUrlFor(token, origin) {
+  return `${origin}/verify-email?token=${encodeURIComponent(token)}`;
 }
 
-async function deliverVerification(email, name, token) {
-  if (emailDeliveryMode === "demo") return { demoVerificationUrl: verificationUrlFor(token) };
+function requestOrigin(request) {
+  const forwardedHost = request.headers["x-forwarded-host"];
+  const host = String(forwardedHost || request.headers.host || "").split(",")[0].trim();
+  const forwardedProtocol = request.headers["x-forwarded-proto"];
+  const protocol = String(forwardedProtocol || (request.socket.encrypted ? "https" : "http")).split(",")[0];
+  return host ? `${protocol}://${host}` : appOrigin;
+}
+
+async function deliverVerification(request, email, name, token) {
+  const origin = requestOrigin(request);
+  if (emailDeliveryMode === "demo") return { demoVerificationUrl: verificationUrlFor(token, origin) };
   if (emailDeliveryMode !== "resend") throw new Error("EMAIL_DELIVERY_MODE must be either demo or resend.");
-  await sendVerificationEmail(email, name, token);
+  await sendVerificationEmail(email, name, token, origin);
   return {};
 }
 
@@ -255,7 +264,7 @@ async function handleRegister(request, response) {
   accounts.push(account);
   await saveAccounts();
   try {
-    const delivery = await deliverVerification(email, name, token);
+    const delivery = await deliverVerification(request, email, name, token);
     sendJson(response, 202, {
       message: delivery.demoVerificationUrl
         ? "Demo account created. Use the verification link below; no email was sent."
@@ -310,7 +319,7 @@ async function handleResendVerification(request, response) {
   account.verificationExpiresAt = Date.now() + verificationLifetimeMs;
   await saveAccounts();
   try {
-    const delivery = await deliverVerification(email, account.name, token);
+    const delivery = await deliverVerification(request, email, account.name, token);
     sendJson(response, 200, {
       message: delivery.demoVerificationUrl
         ? "Demo verification link ready; no email was sent."
