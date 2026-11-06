@@ -98,6 +98,14 @@ function showToast(message) {
 function showVerificationLink(url, message) {
   const feedback = document.getElementById("auth-feedback");
   if (!feedback) return;
+  let linkUrl;
+  try {
+    linkUrl = new URL(url, window.location.origin);
+  } catch {
+    logTestError("Verification link", "Invalid verification URL.");
+    showToast("The server returned an invalid verification link.");
+    return;
+  }
   if (linkUrl.origin !== window.location.origin || linkUrl.pathname !== "/verify-email" || !linkUrl.searchParams.has("token")) {
     showToast("The server returned an invalid verification link.");
     return;
