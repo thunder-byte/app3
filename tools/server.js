@@ -267,7 +267,7 @@ async function handleRegister(request, response) {
     const delivery = await deliverVerification(request, email, name, token);
     sendJson(response, 202, {
       message: delivery.demoVerificationUrl
-        ? "Demo account created. Use the verification link below; no email was sent."
+        ? "Demo verification link ready; email delivery is disabled."
         : "Check your inbox for an email verification link.",
       ...delivery
     });
@@ -322,7 +322,7 @@ async function handleResendVerification(request, response) {
     const delivery = await deliverVerification(request, email, account.name, token);
     sendJson(response, 200, {
       message: delivery.demoVerificationUrl
-        ? "Demo verification link ready; no email was sent."
+        ? "Demo verification link ready; email delivery is disabled."
         : "A new verification link has been sent.",
       ...delivery
     });

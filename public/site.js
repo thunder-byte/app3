@@ -288,8 +288,7 @@ document.addEventListener("click", async event => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email })
     }).then(readJsonResponse).then(payload => {
-      if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo verification link - no email was sent.");
-      else showToast(payload.message || "Verification email sent.");
+      showToast(payload.message || "Verification email sent.");
     }).catch(error => {
       logTestError("Resend verification", error);
       showToast(error.message || "Unable to resend the verification email.");
@@ -385,7 +384,6 @@ document.addEventListener("submit", async event => {
           return;
         }
         showAuth("login");
-        if (payload.demoVerificationUrl) showVerificationLink(payload.demoVerificationUrl, "Demo verification link - no email was sent.");
         showToast(payload.message || "Account created.");
         await syncCommunityAccounts();
         return;
