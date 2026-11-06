@@ -349,7 +349,7 @@ document.addEventListener("submit", async event => {
       }
     } catch (error) {
       console.error("Account authentication request failed", error);
-      showToast("Unable to process your account in this browser.");
+      showToast(error && error.message ? error.message : "Unable to process your account in this browser.");
       return;
     } finally {
       submitButton.disabled = false;

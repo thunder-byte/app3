@@ -58,6 +58,10 @@ function encryptAccountData(value) {
 }
 
 function decryptAccountData(payload) {
+  if (typeof payload === "string") {
+    try { payload = JSON.parse(payload); }
+    catch { return payload; }
+  }
   if (!payload || payload.encrypted !== true || payload.algorithm !== "aes-256-gcm") return payload;
   const decipher = crypto.createDecipheriv("aes-256-gcm", accountEncryptionKey, Buffer.from(payload.iv, "base64"));
   decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
@@ -118,7 +122,7 @@ function saveAccounts() {
       for (const account of accounts) {
         await sql`
           INSERT INTO mentorship_accounts (id, email, account)
-          VALUES (${account.id}, ${emailLookup(account.email)}, ${encryptAccountData(account)})
+          VALUES (${account.id}, ${emailLookup(account.email)}, ${JSON.stringify(encryptAccountData(account))})
           ON CONFLICT (id) DO UPDATE SET
             email = EXCLUDED.email,
             account = EXCLUDED.account
