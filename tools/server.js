@@ -18,7 +18,7 @@ if (fsSync.existsSync(envFile)) {
     }
   }
 }
-const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
+const databaseUrl = (process.env.POSTGRES_URL || process.env.DATABASE_URL || "").trim();
 let sql = null;
 if (databaseUrl) {
   const { neon } = require("@neondatabase/serverless");
@@ -476,7 +476,16 @@ module.exports = async function vercelHandler(request, response) {
   } catch (error) {
     console.error("Unable to initialize account storage:", error);
     if (!response.headersSent) {
-      sendJson(response, 500, { error: "Account storage could not be initialized." });
+      const encryptionMissing = !process.env.ACCOUNTS_ENCRYPTION_KEY;
+      const encryptionInvalid = process.env.ACCOUNTS_ENCRYPTION_KEY && !/^[a-f0-9]{64}$/i.test(process.env.ACCOUNTS_ENCRYPTION_KEY);
+      const detail = encryptionMissing
+        ? "ACCOUNTS_ENCRYPTION_KEY is missing."
+        : encryptionInvalid
+          ? "ACCOUNTS_ENCRYPTION_KEY must contain exactly 64 hexadecimal characters."
+          : databaseUrl
+            ? "Neon database initialization failed."
+            : "Account store could not be loaded.";
+      sendJson(response, 500, { error: `Account storage could not be initialized. ${detail}` });
     } else {
       response.destroy(error);
     }
