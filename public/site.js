@@ -64,44 +64,45 @@ async function syncCommunityAccounts() {
       if (!byId.has(localUser.id) && !legacyDemoIds.has(localUser.id)) byId.set(localUser.id, localUser);
     }
 
-    async function syncMentorRequests() {
-      if (state.user.role !== "Mentor" || !state.user.id) return;
-      try {
-        const response = await fetch(`/api/chat-requests?mentorId=${encodeURIComponent(state.user.id)}`);
-        if (!response.ok) return;
-        const payload = await readJsonResponse(response);
-        const remoteRequests = (payload.requests || []).map(request => ({
-          id: request.id,
-          mentorId: request.mentorId,
-          mentorName: state.user.name,
-          requesterEmail: request.requesterEmail,
-          requesterName: request.requesterName,
-          requesterInterests: request.requesterInterests,
-          requesterGoal: request.requesterGoal,
-          topic: request.topic,
-          date: request.date,
-          time: request.time,
-          format: request.format,
-          note: request.note,
-          status: request.status
-        }));
-        const remoteIds = new Set(remoteRequests.map(request => request.id));
-        state.bookings = [
-          ...state.bookings.filter(request => !remoteIds.has(request.id)),
-          ...remoteRequests
-        ];
-        persist();
-        render();
-      } catch (error) {
-        logTestError("Chat request sync", error);
-      }
-    }
     state.users = [...byId.values()];
     persist();
     render();
   } catch (error) {
     console.error("Unable to load shared community accounts", error);
     logTestError("Accounts sync", error);
+  }
+}
+
+async function syncMentorRequests() {
+  if (state.user.role !== "Mentor" || !state.user.id) return;
+  try {
+    const response = await fetch(`/api/chat-requests?mentorId=${encodeURIComponent(state.user.id)}`);
+    if (!response.ok) return;
+    const payload = await readJsonResponse(response);
+    const remoteRequests = (payload.requests || []).map(request => ({
+      id: request.id,
+      mentorId: request.mentorId,
+      mentorName: state.user.name,
+      requesterEmail: request.requesterEmail,
+      requesterName: request.requesterName,
+      requesterInterests: request.requesterInterests,
+      requesterGoal: request.requesterGoal,
+      topic: request.topic,
+      date: request.date,
+      time: request.time,
+      format: request.format,
+      note: request.note,
+      status: request.status
+    }));
+    const remoteIds = new Set(remoteRequests.map(request => request.id));
+    state.bookings = [
+      ...state.bookings.filter(request => !remoteIds.has(request.id)),
+      ...remoteRequests
+    ];
+    persist();
+    render();
+  } catch (error) {
+    logTestError("Chat request sync", error);
   }
 }
 function persist() {
