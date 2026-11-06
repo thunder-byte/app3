@@ -28,9 +28,41 @@ const appOrigin = (process.env.APP_ORIGIN || defaultAppOrigin).replace(/\/$/, ""
 const emailDeliveryMode = process.env.EMAIL_DELIVERY_MODE || "demo";
 const verificationLifetimeMs = 60 * 60 * 1000;
 const maxRequestBytes = 16 * 1024;
+const accountEncryptionKey = (() => {
+  const configuredKey = process.env.ACCOUNTS_ENCRYPTION_KEY;
+  if (!configuredKey) throw new Error("ACCOUNTS_ENCRYPTION_KEY is required to encrypt account data.");
+  if (!/^[a-f0-9]{64}$/i.test(configuredKey)) throw new Error("ACCOUNTS_ENCRYPTION_KEY must be 64 hexadecimal characters.");
+  return Buffer.from(configuredKey, "hex");
+})();
 let accounts = [];
 let writeQueue = Promise.resolve();
 const requestWindows = new Map();
+const hiddenDemoEmails = new Set(["test@gmail.com"]);
+
+function encryptAccountData(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", accountEncryptionKey, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return {
+    encrypted: true,
+    algorithm: "aes-256-gcm",
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    data: encrypted.toString("base64")
+  };
+}
+
+function decryptAccountData(payload) {
+  if (!payload || payload.encrypted !== true || payload.algorithm !== "aes-256-gcm") return payload;
+  const decipher = crypto.createDecipheriv("aes-256-gcm", accountEncryptionKey, Buffer.from(payload.iv, "base64"));
+  decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
+  const decrypted = Buffer.concat([decipher.update(Buffer.from(payload.data, "base64")), decipher.final()]);
+  return JSON.parse(decrypted.toString("utf8"));
+}
+
+function emailLookup(email) {
+  return crypto.createHmac("sha256", accountEncryptionKey).update(String(email || "").trim().toLowerCase()).digest("hex");
+}
 
 const mimeTypes = {
   ".css": "text/css; charset=utf-8",
@@ -48,15 +80,19 @@ async function loadAccounts() {
         account JSONB NOT NULL
       )
     `;
+    await sql`DELETE FROM mentorship_accounts WHERE lower(email) = ${emailLookup("test@gmail.com")}`;
     const result = await sql`SELECT account FROM mentorship_accounts`;
-    accounts = result.rows.map(row => row.account);
+    accounts = result.rows.map(row => decryptAccountData(row.account)).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
     return;
   }
   await fs.mkdir(dataDirectory, { recursive: true });
   try {
     const content = await fs.readFile(accountsPath, "utf8");
-    accounts = JSON.parse(content);
+    const storedData = JSON.parse(content);
+    accounts = decryptAccountData(storedData);
     if (!Array.isArray(accounts)) throw new Error("Account store must be a JSON array.");
+    accounts = accounts.filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
+    await saveAccounts();
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
     accounts = [];
@@ -77,7 +113,7 @@ function saveAccounts() {
       for (const account of accounts) {
         await sql`
           INSERT INTO mentorship_accounts (id, email, account)
-          VALUES (${account.id}, ${account.email}, ${JSON.stringify(account)})
+          VALUES (${account.id}, ${emailLookup(account.email)}, ${encryptAccountData(account)})
           ON CONFLICT (id) DO UPDATE SET
             email = EXCLUDED.email,
             account = EXCLUDED.account
@@ -86,7 +122,7 @@ function saveAccounts() {
       return;
     }
     const temporaryPath = `${accountsPath}.tmp`;
-    await fs.writeFile(temporaryPath, JSON.stringify(accounts, null, 2), { mode: 0o600 });
+    await fs.writeFile(temporaryPath, JSON.stringify(encryptAccountData(accounts), null, 2), { mode: 0o600 });
     await fs.rename(temporaryPath, accountsPath);
   });
   return writeQueue;
@@ -364,7 +400,7 @@ async function handleRequest(request, response) {
   const url = new URL(request.url, appOrigin);
   if (request.method === "GET" && url.pathname === "/api/accounts") {
     response.setHeader?.("Access-Control-Allow-Origin", "*");
-    sendJson(response, 200, { users: accounts.filter(account => account.status === "Active").map(publicAccount) });
+    sendJson(response, 200, { users: [] });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/auth/register") {

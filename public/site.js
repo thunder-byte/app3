@@ -1,5 +1,5 @@
 const legacyDemoIds = new Set(["maya", "jordan", "amara", "diego", "priya", "alex", "sam", "nina", "student"]);
-const legacyDemoEmails = new Set(["maya.chen@example.com", "jordan.lee@example.com", "amara.okafor@example.com", "diego.r@example.com", "taylor.kim@example.com", "jamie.davis@example.com"]);
+const legacyDemoEmails = new Set(["maya.chen@example.com", "jordan.lee@example.com", "amara.okafor@example.com", "diego.r@example.com", "taylor.kim@example.com", "jamie.davis@example.com", "test@gmail.com"]);
 
 const readStore = (key, fallback) => {
   try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }
@@ -33,7 +33,7 @@ async function syncCommunityAccounts() {
     const response = await fetch("/api/accounts");
     if (!response.ok) return;
     const payload = await response.json();
-    const sharedUsers = payload.users || [];
+    const sharedUsers = (payload.users || []).filter(user => !legacyDemoEmails.has(String(user.email || "").trim().toLowerCase()));
     const byId = new Map(sharedUsers.map(user => [user.id, user]));
     for (const localUser of state.users) {
       if (!byId.has(localUser.id) && !legacyDemoIds.has(localUser.id)) byId.set(localUser.id, localUser);

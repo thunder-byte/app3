@@ -10,6 +10,7 @@
 
 For real email delivery, set `EMAIL_DELIVERY_MODE=resend`, `RESEND_API_KEY`, and `RESEND_FROM` in `.env`. The sender address/domain must be verified in Resend. `onboarding@resend.dev` is for testing and Resend restricts its recipients; verify your own domain to send verification emails to other users. Do not commit real API keys. `.env` is excluded by `.gitignore`.
 Accounts are stored in `data/accounts.json` on the server. Passwords are stored as salted PBKDF2 hashes. Verification links expire after one hour. Use HTTPS and a durable database, session management, and appropriate privacy controls before deploying this prototype for real users.
+Set a unique 64-character hexadecimal `ACCOUNTS_ENCRYPTION_KEY` in `.env` before starting the server. This key encrypts the account store with AES-256-GCM; keep it secret and back it up because accounts cannot be recovered if it is lost.
 
 Email verification links expire after one hour. In demo mode, the link is shown on screen and does not prove mailbox ownership. In Resend mode, an email address is verified only after the recipient opens the one-time link delivered to that mailbox.
 
