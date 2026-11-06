@@ -95,30 +95,6 @@ function showToast(message) {
   toast.textContent = message; toast.classList.add("show");
   clearTimeout(toastTimeout); toastTimeout = setTimeout(() => toast.classList.remove("show"), 2800);
 }
-function showVerificationLink(url, message) {
-  const feedback = document.getElementById("auth-feedback");
-  if (!feedback) return;
-  let linkUrl;
-  try {
-    linkUrl = new URL(url, window.location.origin);
-  } catch {
-    logTestError("Verification link", "Invalid verification URL.");
-    showToast("The server returned an invalid verification link.");
-    return;
-  }
-  if (linkUrl.origin !== window.location.origin || linkUrl.pathname !== "/verify-email" || !linkUrl.searchParams.has("token")) {
-    showToast("The server returned an invalid verification link.");
-    return;
-  }
-  feedback.replaceChildren();
-  const text = document.createElement("p");
-  text.textContent = message;
-  const link = document.createElement("a");
-  link.href = `${linkUrl.pathname}${linkUrl.search}`;
-  link.textContent = "Verify email for demo";
-  feedback.append(text, link);
-  feedback.hidden = false;
-}
 function normalizeEmail(email) { return String(email || "").trim().toLowerCase(); }
 async function readJsonResponse(response) {
   const contentType = response.headers.get("content-type") || "";
@@ -237,7 +213,7 @@ function showAuth(mode = "login") {
   const authRoot = document.getElementById("auth-root");
   authRoot.classList.add("active");
   const isSignup = mode === "signup";
-  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There’s more than one way to get where you’re going.</h1><p>Find people who’ll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Pick up where your next step begins."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button>${!isSignup ? `<button class="button-quiet auth-resend" type="button" data-resend-verification hidden>Resend verification email</button>` : ""}<div id="auth-feedback" class="auth-feedback" hidden></div><div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div><p style="text-align:center;margin-top:17px;font-size:9px">Demo mode shows a local verification link; Resend mode emails the link.</p></form></section></div>`;
+  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There's more than one way to get where you're going.</h1><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Pick up where your next step begins."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div><div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
   document.querySelector("[data-auth-switch]").addEventListener("click", () => showAuth(isSignup ? "login" : "signup"));
 }
 document.addEventListener("click", async event => {
@@ -279,22 +255,6 @@ document.addEventListener("click", async event => {
     openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${initials(state.user.name)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
   }
   if (target.hasAttribute("data-logout")) { closeModal(); showAuth(); return; }
-  if (target.hasAttribute("data-resend-verification")) {
-    const form = document.getElementById("auth-form");
-    const email = normalizeEmail(form.elements.email.value);
-    if (!email) { showToast("Enter your email address first."); return; }
-    fetch("/api/auth/resend-verification", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email })
-    }).then(readJsonResponse).then(payload => {
-      showToast(payload.message || "Verification email sent.");
-    }).catch(error => {
-      logTestError("Resend verification", error);
-      showToast(error.message || "Unable to resend the verification email.");
-    });
-    return;
-  }
   if (target.hasAttribute("data-request-delete-own")) {
     const member = state.users.find(user => user.email === state.user.email) || { id: "", name: state.user.name, email: state.user.email };
     confirmAccountDeletion(member, true); return;
@@ -396,7 +356,6 @@ document.addEventListener("submit", async event => {
         const payload = await readJsonResponse(response);
         if (!response.ok) {
           logTestError("Login", payload.error || `HTTP ${response.status}`);
-          if (payload.code === "EMAIL_NOT_VERIFIED") form.querySelector("[data-resend-verification]").hidden = false;
           showToast(payload.error || "Unable to sign in.");
           return;
         }

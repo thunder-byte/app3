@@ -28,10 +28,7 @@ const vercelDataDirectory = process.env.VERCEL ? "/tmp/mentorshipmatch-data" : n
 const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || vercelDataDirectory || path.join(root, "data"));
 const accountsPath = path.join(dataDirectory, "accounts.json");
 const port = Number(process.env.PORT || 3000);
-const defaultAppOrigin = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`;
-const appOrigin = (process.env.APP_ORIGIN || defaultAppOrigin).replace(/\/$/, "");
-const emailDeliveryMode = process.env.EMAIL_DELIVERY_MODE || "demo";
-const verificationLifetimeMs = 60 * 60 * 1000;
+const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
 const maxRequestBytes = 16 * 1024;
 let accounts = [];
 let writeQueue = Promise.resolve();
@@ -262,7 +259,6 @@ async function handleRegister(request, response) {
     return;
   }
 
-  const token = crypto.randomBytes(32).toString("base64url");
   const credentials = await passwordRecord(password);
   const account = {
     id: crypto.randomUUID(),
@@ -275,9 +271,7 @@ async function handleRegister(request, response) {
     interests: "",
     goal: "",
     status: "Active",
-    emailVerified: false,
-    verificationTokenHash: crypto.createHash("sha256").update(token).digest("hex"),
-    verificationExpiresAt: Date.now() + verificationLifetimeMs,
+    emailVerified: true,
     ...credentials
   };
 
@@ -287,19 +281,7 @@ async function handleRegister(request, response) {
   }
   accounts.push(account);
   await saveAccounts();
-  try {
-    const delivery = await deliverVerification(request, email, name, token);
-    sendJson(response, 202, {
-      message: delivery.demoVerificationUrl
-        ? "Demo verification link ready; email delivery is disabled."
-        : "Check your inbox for an email verification link.",
-      ...delivery
-    });
-  } catch (error) {
-    accounts = accounts.filter(item => item.id !== account.id);
-    await saveAccounts();
-    throw error;
-  }
+  sendJson(response, 201, { message: "Account created. You can sign in now." });
 }
 
 async function handleLogin(request, response) {
@@ -316,10 +298,6 @@ async function handleLogin(request, response) {
     sendJson(response, 401, { error: "Incorrect email or password." });
     return;
   }
-  if (!account.emailVerified) {
-    sendJson(response, 403, { code: "EMAIL_NOT_VERIFIED", error: "Verify your email address before signing in." });
-    return;
-  }
   if (account.status !== "Active") {
     sendJson(response, 403, { error: "This account is suspended. Contact an administrator for help." });
     return;
@@ -327,54 +305,6 @@ async function handleLogin(request, response) {
   sendJson(response, 200, { user: publicAccount(account) });
 }
 
-async function handleResendVerification(request, response) {
-  const body = await readJson(request);
-  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-  const account = accounts.find(item => item.email === email && !item.emailVerified);
-  if (!account) {
-    sendJson(response, 200, { message: "If an unverified account exists for that address, a new link will be sent." });
-    return;
-  }
-
-  const previousTokenHash = account.verificationTokenHash;
-  const previousExpiry = account.verificationExpiresAt;
-  const token = crypto.randomBytes(32).toString("base64url");
-  account.verificationTokenHash = crypto.createHash("sha256").update(token).digest("hex");
-  account.verificationExpiresAt = Date.now() + verificationLifetimeMs;
-  await saveAccounts();
-  try {
-    const delivery = await deliverVerification(request, email, account.name, token);
-    sendJson(response, 200, {
-      message: delivery.demoVerificationUrl
-        ? "Demo verification link ready; email delivery is disabled."
-        : "A new verification link has been sent.",
-      ...delivery
-    });
-  } catch (error) {
-    account.verificationTokenHash = previousTokenHash;
-    account.verificationExpiresAt = previousExpiry;
-    await saveAccounts();
-    throw error;
-  }
-}
-
-async function handleVerification(url, response) {
-  const token = url.searchParams.get("token") || "";
-  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-  const account = accounts.find(item => item.verificationTokenHash && safeEqualHex(item.verificationTokenHash, tokenHash));
-  if (!account || account.verificationExpiresAt < Date.now()) {
-    response.writeHead(400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
-    response.end("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Link expired</title><body style=\"font:16px sans-serif;max-width:520px;margin:12vh auto;padding:20px\"><h1>This verification link is invalid or expired.</h1><p>Return to MentorshipMatch, register again, and use the latest email.</p><a href=\"/\">Back to MentorshipMatch</a></body></html>");
-    return;
-  }
-  account.emailVerified = true;
-  account.emailVerifiedAt = new Date().toISOString();
-  delete account.verificationTokenHash;
-  delete account.verificationExpiresAt;
-  await saveAccounts();
-  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
-  response.end("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Email verified</title><body style=\"font:16px sans-serif;max-width:520px;margin:12vh auto;padding:20px\"><h1>Your email is verified.</h1><p>You can now return to MentorshipMatch and sign in.</p><a href=\"/\">Go to sign in</a></body></html>");
-}
 
 async function serveStatic(url, response) {
   const requestedPath = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
@@ -420,11 +350,6 @@ async function handleRequest(request, response) {
     if (!allowRequest(request, response, "login", 10, 15 * 60 * 1000)) return;
     return handleLogin(request, response);
   }
-  if (request.method === "POST" && url.pathname === "/api/auth/resend-verification") {
-    if (!allowRequest(request, response, "resend", 3, 60 * 60 * 1000)) return;
-    return handleResendVerification(request, response);
-  }
-  if (request.method === "GET" && url.pathname === "/verify-email") return handleVerification(url, response);
   if (request.method === "GET") return serveStatic(url, response);
   sendJson(response, 404, { error: "Not found." });
 }
