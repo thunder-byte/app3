@@ -201,6 +201,30 @@ async function sendVerificationEmail(email, name, token, origin) {
     const detail = await result.text();
     throw new Error(`Email provider rejected the verification email (${result.status}): ${detail.slice(0, 300)}`);
   }
+
+  async function sendVerificationEmailFixed(email, name, token, origin) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const sender = process.env.RESEND_FROM;
+    if (!apiKey || !sender) throw new Error("Email delivery is not configured. Set RESEND_API_KEY and RESEND_FROM.");
+    const verificationUrl = `${origin}/verify-email?token=${encodeURIComponent(token)}`;
+    const result = await fetch(process.env.RESEND_API_URL || "https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: sender,
+        to: [email],
+        subject: "Verify your MentorshipMatch email",
+        text: `Hi ${name}, verify your MentorshipMatch email by opening: ${verificationUrl}\n\nThis link expires in one hour.`
+      })
+    });
+    if (!result.ok) {
+      const detail = await result.text();
+      throw new Error(`Email provider rejected the verification email (${result.status}): ${detail.slice(0, 300)}`);
+    }
+  }
 }
 
 function verificationUrlFor(token, origin) {
@@ -219,7 +243,7 @@ async function deliverVerification(request, email, name, token) {
   const origin = requestOrigin(request);
   if (emailDeliveryMode === "demo") return { demoVerificationUrl: verificationUrlFor(token, origin) };
   if (emailDeliveryMode !== "resend") throw new Error("EMAIL_DELIVERY_MODE must be either demo or resend.");
-  await sendVerificationEmail(email, name, token, origin);
+  await sendVerificationEmailFixed(email, name, token, origin);
   return {};
 }
 
