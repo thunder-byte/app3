@@ -63,6 +63,39 @@ async function syncCommunityAccounts() {
     for (const localUser of state.users) {
       if (!byId.has(localUser.id) && !legacyDemoIds.has(localUser.id)) byId.set(localUser.id, localUser);
     }
+
+    async function syncMentorRequests() {
+      if (state.user.role !== "Mentor" || !state.user.id) return;
+      try {
+        const response = await fetch(`/api/chat-requests?mentorId=${encodeURIComponent(state.user.id)}`);
+        if (!response.ok) return;
+        const payload = await readJsonResponse(response);
+        const remoteRequests = (payload.requests || []).map(request => ({
+          id: request.id,
+          mentorId: request.mentorId,
+          mentorName: state.user.name,
+          requesterEmail: request.requesterEmail,
+          requesterName: request.requesterName,
+          requesterInterests: request.requesterInterests,
+          requesterGoal: request.requesterGoal,
+          topic: request.topic,
+          date: request.date,
+          time: request.time,
+          format: request.format,
+          note: request.note,
+          status: request.status
+        }));
+        const remoteIds = new Set(remoteRequests.map(request => request.id));
+        state.bookings = [
+          ...state.bookings.filter(request => !remoteIds.has(request.id)),
+          ...remoteRequests
+        ];
+        persist();
+        render();
+      } catch (error) {
+        logTestError("Chat request sync", error);
+      }
+    }
     state.users = [...byId.values()];
     persist();
     render();
@@ -125,7 +158,11 @@ function mentorCard(mentor) {
   </article>`;
 }
 function renderDiscover() {
-  const activeMentors = state.users.filter(user => user.role === "Mentor" && user.status === "Active");
+  const activeMentors = state.users.filter(user =>
+    user.role === "Mentor" &&
+    user.status === "Active" &&
+    normalizeEmail(user.email) !== normalizeEmail(state.user.email)
+  );
   const matches = activeMentors.filter(mentor => {
     const searchMatch = `${mentor.name} ${mentor.field}`.toLowerCase().includes(state.query.toLowerCase());
     return searchMatch && (state.filter === "All fields" || mentor.field === state.filter);
@@ -150,7 +187,10 @@ function renderSessions() {
     <section class="panel"><div class="panel-heading"><div><h2>Your conversations</h2><p>Manage requests and reflect on past sessions.</p></div></div><div class="panel-body">${bookings.length ? `<div class="session-list">${bookings.map(booking => {
       const date = new Date(`${booking.date}T12:00:00`);
       const statusClass = booking.status === "Pending" ? "pending" : booking.status === "Completed" ? "completed" : "";
-      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(booking.mentorName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(booking.time)} · ${safe(booking.format)}</p></div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? `<button class="button-secondary" data-review="${booking.mentorId}">${state.reviews[booking.mentorId] ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}</div></article>`;
+      const conversationName = state.user.role === "Mentor"
+        ? (booking.requesterName || booking.requesterEmail)
+        : (booking.mentorName || "Mentor");
+      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(booking.time)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student goal: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? `<button class="button-secondary" data-review="${booking.mentorId}">${state.reviews[booking.mentorId] ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}</div></article>`;
     }).join("")}</div>` : `<div class="empty-state"><strong>Your calendar has room for a great conversation.</strong>Find a mentor and book your first session.<br><button class="button-primary" style="margin-top:15px" data-view="discover">Browse mentors</button></div>`}</div></section></div>`;
 }
 function renderProfile() {
@@ -295,6 +335,11 @@ document.addEventListener("submit", async event => {
     const data = new FormData(form); const mentor = state.users.find(item => item.id === form.dataset.mentor && item.role === "Mentor" && item.status === "Active");
     if (!mentor) { showToast("That mentor could not be found."); return; }
     state.bookings.push({ id: `booking-${Date.now()}`, mentorId: mentor.id, mentorName: mentor.name, requesterEmail: state.user.email, topic: data.get("topic").trim(), date: data.get("date"), time: data.get("time"), format: data.get("format"), note: data.get("note").trim(), status: "Pending" });
+    fetch("/api/chat-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.bookings[state.bookings.length - 1])
+    }).then(readJsonResponse).catch(error => logTestError("Chat request save", error));
     persist(); closeModal(); state.view = "sessions"; render(); showToast("Your session request is on its way!"); return;
   }
   if (form.id === "review-form") {
@@ -378,5 +423,16 @@ document.getElementById("mobile-menu").addEventListener("click", () => document.
 modalRoot.addEventListener("click", event => { if (event.target === modalRoot) closeModal(); });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal(); });
 render();
-showAuth("login");
-syncCommunityAccounts();
+if (normalizeEmail(savedUser.email)) {
+  document.getElementById("auth-root").classList.remove("active");
+  document.querySelector(".app-shell").style.display = "";
+  syncCommunityAccounts();
+  syncMentorRequests();
+} else {
+  showAuth("login");
+  syncCommunityAccounts();
+}
+setInterval(() => {
+  syncCommunityAccounts();
+  syncMentorRequests();
+}, 5000);

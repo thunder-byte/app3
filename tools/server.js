@@ -27,11 +27,14 @@ if (databaseUrl) {
 const vercelDataDirectory = process.env.VERCEL ? "/tmp/mentorshipmatch-data" : null;
 const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || vercelDataDirectory || path.join(root, "data"));
 const accountsPath = path.join(dataDirectory, "accounts.json");
+const requestsPath = path.join(dataDirectory, "chat-requests.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
 const maxRequestBytes = 16 * 1024;
 let accounts = [];
+let chatRequests = [];
 let writeQueue = Promise.resolve();
+let requestsWriteQueue = Promise.resolve();
 const requestWindows = new Map();
 const hiddenDemoEmails = new Set(["test@gmail.com"]);
 
@@ -57,6 +60,7 @@ async function loadAccounts() {
     accounts = rows.map(row => typeof row.account === "string" ? JSON.parse(row.account) : row.account).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
     return;
   }
+
   await fs.mkdir(dataDirectory, { recursive: true });
   try {
     const content = await fs.readFile(accountsPath, "utf8");
@@ -69,6 +73,31 @@ async function loadAccounts() {
     if (error.code !== "ENOENT") throw error;
     accounts = [];
     await saveAccounts();
+  }
+}
+
+async function loadChatRequests() {
+  if (sql) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS mentorship_chat_requests (
+        id TEXT PRIMARY KEY,
+        mentor_id TEXT NOT NULL,
+        requester_email TEXT NOT NULL,
+        request JSONB NOT NULL
+      )
+    `;
+    const result = await sql`SELECT request FROM mentorship_chat_requests`;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    chatRequests = rows.map(row => typeof row.request === "string" ? JSON.parse(row.request) : row.request);
+    return;
+  }
+  await fs.mkdir(dataDirectory, { recursive: true });
+  try {
+    const storedData = JSON.parse(await fs.readFile(requestsPath, "utf8"));
+    chatRequests = Array.isArray(storedData) ? storedData : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    chatRequests = [];
   }
 }
 
@@ -99,6 +128,34 @@ function saveAccounts() {
     await fs.rename(temporaryPath, accountsPath);
   });
   return writeQueue;
+}
+
+function saveChatRequests() {
+  requestsWriteQueue = requestsWriteQueue.then(async () => {
+    if (sql) {
+      const storedResult = await sql`SELECT id FROM mentorship_chat_requests`;
+      const rows = Array.isArray(storedResult) ? storedResult : (storedResult.rows || []);
+      const requestIds = new Set(chatRequests.map(request => request.id));
+      for (const stored of rows) {
+        if (!requestIds.has(stored.id)) await sql`DELETE FROM mentorship_chat_requests WHERE id = ${stored.id}`;
+      }
+      for (const request of chatRequests) {
+        await sql`
+          INSERT INTO mentorship_chat_requests (id, mentor_id, requester_email, request)
+          VALUES (${request.id}, ${request.mentorId}, ${request.requesterEmail}, ${JSON.stringify(request)})
+          ON CONFLICT (id) DO UPDATE SET
+            mentor_id = EXCLUDED.mentor_id,
+            requester_email = EXCLUDED.requester_email,
+            request = EXCLUDED.request
+        `;
+      }
+      return;
+    }
+    const temporaryPath = `${requestsPath}.tmp`;
+    await fs.writeFile(temporaryPath, JSON.stringify(chatRequests, null, 2), { mode: 0o600 });
+    await fs.rename(temporaryPath, requestsPath);
+  });
+  return requestsWriteQueue;
 }
 
 function sendJson(response, status, body) {
@@ -346,6 +403,41 @@ async function handleRequest(request, response) {
     sendJson(response, 200, { users });
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/chat-requests") {
+    const body = await readJson(request);
+    const mentorId = typeof body.mentorId === "string" ? body.mentorId.trim() : "";
+    const requesterEmail = typeof body.requesterEmail === "string" ? body.requesterEmail.trim().toLowerCase() : "";
+    const mentor = accounts.find(account => account.id === mentorId && account.role === "Mentor" && account.status === "Active");
+    if (!mentor || !requesterEmail) {
+      sendJson(response, 400, { error: "A valid mentor and requester are required." });
+      return;
+    }
+    const chatRequest = {
+      id: typeof body.id === "string" && body.id ? body.id : `booking-${Date.now()}`,
+      mentorId,
+      requesterEmail,
+      topic: String(body.topic || "").trim().slice(0, 200),
+      date: String(body.date || "").slice(0, 20),
+      time: String(body.time || "").slice(0, 20),
+      format: String(body.format || "").slice(0, 50),
+      note: String(body.note || "").slice(0, 1000),
+      status: "Pending",
+      createdAt: new Date().toISOString()
+    };
+    chatRequests.push(chatRequest);
+    await saveChatRequests();
+    sendJson(response, 201, { request: chatRequest });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/chat-requests") {
+    const mentorId = url.searchParams.get("mentorId") || "";
+    const requests = chatRequests.filter(request => request.mentorId === mentorId).map(request => {
+      const requester = accounts.find(account => account.email === request.requesterEmail);
+      return { ...request, requesterName: requester?.name || request.requesterEmail, requesterSchool: requester?.school || "", requesterYear: requester?.year || "", requesterInterests: requester?.interests || "", requesterGoal: requester?.goal || "" };
+    });
+    sendJson(response, 200, { requests });
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/auth/register") {
     if (!allowRequest(request, response, "register", 5, 60 * 60 * 1000)) return;
     return handleRegister(request, response);
@@ -369,7 +461,7 @@ function requestErrorHandler(request, response) {
 }
 
 function ensureAccountsLoaded() {
-  if (!accountsReady) accountsReady = loadAccounts();
+  if (!accountsReady) accountsReady = Promise.all([loadAccounts(), loadChatRequests()]);
   return accountsReady;
 }
 
