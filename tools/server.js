@@ -4,7 +4,6 @@ const fsSync = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { promisify } = require("node:util");
-const { sql } = process.env.POSTGRES_URL ? require("@vercel/postgres") : { sql: null };
 
 const pbkdf2 = promisify(crypto.pbkdf2);
 const root = path.resolve(__dirname, "..");
@@ -18,6 +17,12 @@ if (fsSync.existsSync(envFile)) {
       process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2");
     }
   }
+}
+const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
+let sql = null;
+if (databaseUrl) {
+  const { neon } = require("@neondatabase/serverless");
+  sql = neon(databaseUrl);
 }
 const vercelDataDirectory = process.env.VERCEL ? "/tmp/mentorshipmatch-data" : null;
 const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || vercelDataDirectory || path.join(root, "data"));
@@ -80,7 +85,7 @@ async function loadAccounts() {
         account JSONB NOT NULL
       )
     `;
-    await sql`DELETE FROM mentorship_accounts WHERE lower(email) = ${emailLookup("test@gmail.com")}`;
+    await sql`DELETE FROM mentorship_accounts WHERE email = ${emailLookup("test@gmail.com")}`;
     const result = await sql`SELECT account FROM mentorship_accounts`;
     accounts = result.rows.map(row => decryptAccountData(row.account)).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
     return;

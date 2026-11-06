@@ -6,6 +6,6 @@
     "start": "node tools/server.js"
   },
   "dependencies": {
-    "@vercel/postgres": "^0.10.0"
+    "@neondatabase/serverless": "^0.9.5"
   }
 }
