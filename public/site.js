@@ -39,7 +39,7 @@ const state = {
     .map(([mentorId, review]) => [mentorId, Array.isArray(review) ? review : [review]])),
   users: savedUsers.filter(user => !legacyDemoIds.has(user.id) && !legacyDemoEmails.has(user.email)).map(({ passwordSalt, passwordHash, ...user }) => user),
   reports: savedReports.filter(report => report.title !== "Inappropriate message reported"),
-  filter: "All fields", query: ""
+  query: ""
 };
 let selectedProfileImage = state.user.profileImage || "";
 let profileImageTask = Promise.resolve();
@@ -277,8 +277,19 @@ function connectionFor(memberId) {
       Boolean(requester?.email && normalizeEmail(requester.email) === normalizeEmail(booking.requesterEmail));
   });
 }
-function memberField(member) {
-  return String(member.field || member.interests?.split(",")[0] || "").trim();
+function matchesMemberSearch(member, query) {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const profile = [
+    member.name,
+    member.role,
+    member.field,
+    member.interests,
+    member.goal,
+    member.school,
+    member.year
+  ].join(" ").toLocaleLowerCase();
+  return terms.some(term => profile.includes(term));
 }
 function mentorCard(mentor) {
   const isMentor = mentor.role === "Mentor";
@@ -293,23 +304,16 @@ function mentorCard(mentor) {
 }
 function renderDiscover() {
   const activeMembers = state.users.filter(user => user.status === "Active" && user.id !== state.user.id);
-  const fields = [...new Map(activeMembers.map(memberField).filter(Boolean).map(field => [field.toLocaleLowerCase(), field])).values()]
-    .sort((a, b) => a.localeCompare(b));
-  const activeField = fields.find(field => field.toLocaleLowerCase() === state.filter.toLocaleLowerCase()) || "All fields";
-  const matches = activeMembers.filter(mentor => {
-    const searchMatch = `${mentor.name} ${mentor.role} ${mentor.field || ""} ${mentor.interests || ""} ${mentor.goal || ""}`.toLowerCase().includes(state.query.toLowerCase());
-    return searchMatch && (activeField === "All fields" || memberField(mentor).toLocaleLowerCase() === activeField.toLocaleLowerCase());
-  });
+  const matches = activeMembers.filter(mentor => matchesMemberSearch(mentor, state.query));
   return `<div class="view-wrap">
     <section class="hero"><div><div class="eyebrow">A little guidance goes a long way</div><h1>Your future has a friend in it.</h1><p>Meet students and mentors, explore their interests, and connect when you're ready.</p></div><div class="hero-side"><div class="match-pill">✳ &nbsp;<b>${activeMembers.length} members</b> available</div></div></section>
     <section class="featured-banner"><div class="banner-copy"><span class="banner-tag"><span></span> Your next chapter starts here</span><h2>Big dreams. Real people in your corner.</h2><p>A 20-minute conversation could help you see your next step a little more clearly.</p><button class="button-primary" data-scroll-mentors>Explore your matches <span>↓</span></button></div>
       <div class="banner-art" aria-hidden="true"><div class="floating-card one"><strong>Good things grow here</strong>Curiosity is a great place to start.</div><div class="mentor-illustration"><div class="person-head"></div><div class="person-hair"></div><div class="person-body"></div><div class="person-shirt"></div></div><div class="floating-card two"><span class="tiny-avatar">✳</span><span>New connections,<br>new possibilities</span></div></div>
     </section>
     <section id="mentor-section"><div class="section-heading"><div><h2>Community members</h2><p>Explore member profiles and see what they're interested in.</p></div><button class="button-quiet" data-view="sessions">Your sessions <span>→</span></button></div>
-      <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search by name, role, or interest..." value="${safe(state.query)}" aria-label="Search mentors"></label>
-        <select class="filter-select" id="field-filter" aria-label="Filter by member field">${["All fields", ...fields].map(field => `<option value="${safe(field)}" ${activeField === field ? "selected" : ""}>${safe(field)}</option>`).join("")}</select>
+      <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search mentors by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search mentors by any profile detail"></label>
         <span class="result-count">${matches.length} mentors</span></div>
-      <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>No community profiles yet.</strong>Member profiles will appear here once they join the community.</div>`}</div>
+      <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${state.query ? "No matching members found." : "No community profiles yet."}</strong>${state.query ? "Try another word or phrase to find a mentor." : "Member profiles will appear here once they join the community."}</div>`}</div>
     </section></div>`;
 }
 function renderSessions() {
@@ -536,7 +540,6 @@ document.addEventListener("input", event => {
   if (event.target.id === "mentor-search") { state.query = event.target.value; const cursor = event.target.selectionStart; render(); const input = document.getElementById("mentor-search"); input.focus(); input.setSelectionRange(cursor, cursor); }
 });
 document.addEventListener("change", event => {
-  if (event.target.id === "field-filter") { state.filter = event.target.value; render(); }
   if (event.target.id === "profile-picture" && event.target.files?.[0]) {
     const selectionVersion = ++profileImageSelectionVersion;
     profileImageTask = resizeProfileImage(event.target.files[0]).then(image => {
