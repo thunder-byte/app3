@@ -753,6 +753,11 @@ async function handleRequest(request, response) {
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/reviews") {
+    if (sql) {
+      const result = await sql`SELECT review FROM mentorship_reviews`;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      reviews = rows.map(row => typeof row.review === "string" ? JSON.parse(row.review) : row.review);
+    }
     const publicReviews = reviews.map(review => {
       const reviewer = accounts.find(account => account.id === review.reviewerId);
       return { id: review.id, mentorId: review.mentorId, reviewerId: review.reviewerId, rating: review.rating, text: review.text, reviewerName: reviewer?.name || "Community member", createdAt: review.createdAt };
@@ -782,7 +787,15 @@ async function handleRequest(request, response) {
       sendJson(response, 400, { error: "A valid connected member, rating, and review are required." });
       return;
     }
-    const existing = reviews.find(review => review.mentorId === mentorId && review.reviewerId === reviewerId);
+    let existing;
+    if (sql) {
+      const result = await sql`SELECT review FROM mentorship_reviews WHERE mentor_id = ${mentorId}`;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      existing = rows.map(row => typeof row.review === "string" ? JSON.parse(row.review) : row.review)
+        .find(review => review.reviewerId === reviewerId);
+    } else {
+      existing = reviews.find(review => review.mentorId === mentorId && review.reviewerId === reviewerId);
+    }
     const review = {
       id: existing?.id || crypto.randomUUID(),
       mentorId,
@@ -791,9 +804,20 @@ async function handleRequest(request, response) {
       text,
       createdAt: existing?.createdAt || new Date().toISOString()
     };
-    if (existing) Object.assign(existing, review);
+    const cachedIndex = reviews.findIndex(item => item.id === review.id || (item.mentorId === mentorId && item.reviewerId === reviewerId));
+    if (cachedIndex >= 0) reviews[cachedIndex] = review;
     else reviews.push(review);
-    await saveReviews();
+    if (sql) {
+      await sql`
+        INSERT INTO mentorship_reviews (id, mentor_id, review)
+        VALUES (${review.id}, ${review.mentorId}, ${JSON.stringify(review)})
+        ON CONFLICT (id) DO UPDATE SET
+          mentor_id = EXCLUDED.mentor_id,
+          review = EXCLUDED.review
+      `;
+    } else {
+      await saveReviews();
+    }
     const reviewer = accounts.find(account => account.id === reviewerId);
     sendJson(response, 201, { review: { id: review.id, mentorId, reviewerId, rating, text, reviewerName: reviewer?.name || "Community member", createdAt: review.createdAt } });
     return;

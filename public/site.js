@@ -24,6 +24,7 @@ let navigationOwnerId = savedNavigation?.userId || "";
 const restoreNavigation = savedNavigation && savedNavigation.userId === savedUser.id;
 const messageSyncVersions = new Map();
 const messageSyncInFlight = new Map();
+let reviewSyncVersion = 0;
 const state = {
   view: restoreNavigation && validViews.has(savedNavigation.view) ? savedNavigation.view : "discover",
   profileId: restoreNavigation ? String(savedNavigation.profileId || "") : "",
@@ -55,6 +56,7 @@ function apiHeaders(json = false) {
 }
 async function syncCommunityAccounts() {
   if (!authToken) return;
+  const reviewsVersion = reviewSyncVersion;
   try {
     const [response, reviewResponse] = await Promise.all([
       fetch("/api/accounts", { headers: apiHeaders() }),
@@ -73,11 +75,13 @@ async function syncCommunityAccounts() {
     state.users = [...byId.values()];
     if (!reviewResponse.ok) throw new Error(`Review request failed (HTTP ${reviewResponse.status}).`);
     const reviewPayload = await readJsonResponse(reviewResponse);
-    state.reviews = (reviewPayload.reviews || []).reduce((grouped, review) => {
-      if (!grouped[review.mentorId]) grouped[review.mentorId] = [];
-      grouped[review.mentorId].push(review);
-      return grouped;
-    }, {});
+    if (reviewsVersion === reviewSyncVersion) {
+      state.reviews = (reviewPayload.reviews || []).reduce((grouped, review) => {
+        if (!grouped[review.mentorId]) grouped[review.mentorId] = [];
+        grouped[review.mentorId].push(review);
+        return grouped;
+      }, {});
+    }
     if (JSON.stringify(state.users) !== previousUsers || JSON.stringify(state.reviews) !== previousReviews) {
       persist();
       if (state.view !== "messages") render();
@@ -325,9 +329,9 @@ function renderProfile() {
 }
 function reviewListMarkup(memberId) {
   const memberReviews = reviewsFor(memberId);
-  return memberReviews.length
-    ? `<div class="review-list">${memberReviews.map(review => `<article class="review-item"><div class="review-rating" aria-label="${Number(review.rating)} out of 5 stars">${"★".repeat(Math.max(0, Math.min(5, Number(review.rating))))}${"☆".repeat(Math.max(0, 5 - Number(review.rating)))}</div><p>${safe(review.text)}</p><small>From ${safe(review.reviewerName || "Community member")}</small></article>`).join("")}</div>`
-    : `<span class="muted-copy">No reviews yet.</span>`;
+  if (!memberReviews.length) return `<span class="muted-copy">No reviews yet.</span>`;
+  const average = memberReviews.reduce((sum, review) => sum + Number(review.rating || 0), 0) / memberReviews.length;
+  return `<div class="review-summary"><strong>${average.toFixed(1)}</strong><span class="review-rating" aria-label="${average.toFixed(1)} out of 5 stars">${"★".repeat(Math.round(average))}${"☆".repeat(5 - Math.round(average))}</span><small>Average from ${memberReviews.length} ${memberReviews.length === 1 ? "review" : "reviews"}</small></div><div class="review-list">${memberReviews.map(review => `<article class="review-item"><div class="review-rating" aria-label="${Number(review.rating)} out of 5 stars">${"★".repeat(Math.max(0, Math.min(5, Number(review.rating))))}${"☆".repeat(Math.max(0, 5 - Number(review.rating)))}</div><p>${safe(review.text)}</p><small>From ${safe(review.reviewerName || "Community member")}</small></article>`).join("")}</div>`;
 }
 function renderMemberProfile() {
   const member = state.users.find(user => user.id === state.profileId && user.status === "Active");
@@ -572,30 +576,33 @@ document.addEventListener("submit", async event => {
   if (form.id === "review-form") {
     const data = new FormData(form); const rating = Number(data.get("rating"));
     if (!rating) { showToast("Choose a star rating before sharing."); return; }
-    const review = { rating, text: data.get("text").trim(), reviewerId: state.user.id, reviewerName: state.user.name, reviewerEmail: state.user.email, createdAt: new Date().toISOString() };
-    const mentorReviews = reviewsFor(form.dataset.mentor);
-    const existing = mentorReviews.findIndex(item => item.reviewerId === state.user.id || item.reviewerEmail === state.user.email);
-    if (existing >= 0) mentorReviews[existing] = review;
-    else mentorReviews.push(review);
-    state.reviews[form.dataset.mentor] = mentorReviews;
-    const booking = state.bookings.find(item => item.mentorId === form.dataset.mentor);
-    if (booking) booking.status = "Completed";
-    fetch("/api/reviews", {
-      method: "POST",
-      headers: apiHeaders(true),
-      body: JSON.stringify({ mentorId: form.dataset.mentor, reviewerId: state.user.id, rating, text: review.text })
-    }).then(readJsonResponse).then(payload => {
-      if (payload.review) {
-        const index = reviewsFor(form.dataset.mentor).findIndex(item => item.reviewerId === state.user.id);
-        state.reviews[form.dataset.mentor][index] = payload.review;
-        persist();
-      }
-    }).catch(error => {
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    try {
+      const response = await fetch("/api/reviews", {
+        method: "POST",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ mentorId: form.dataset.mentor, reviewerId: state.user.id, rating, text: data.get("text").trim() })
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `Review save failed (HTTP ${response.status}).`);
+      const mentorReviews = reviewsFor(form.dataset.mentor);
+      const existing = mentorReviews.findIndex(item => item.reviewerId === state.user.id);
+      if (existing >= 0) mentorReviews[existing] = payload.review;
+      else mentorReviews.push(payload.review);
+      state.reviews[form.dataset.mentor] = mentorReviews;
+      reviewSyncVersion++;
+      persist();
+      closeModal();
+      render();
+      showToast("Thanks for sharing your experience!");
+    } catch (error) {
       console.error("Unable to save review", error);
       logTestError("Review save", error);
-      showToast("Your review is saved here but could not be shared with the community.");
-    });
-    persist(); closeModal(); render(); showToast("Thanks for sharing your experience!"); return;
+      showToast(error.message || "Your review could not be saved.");
+      submitButton.disabled = false;
+    }
+    return;
   }
   if (form.id === "message-form") {
     const data = new FormData(form);
