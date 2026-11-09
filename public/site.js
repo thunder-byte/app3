@@ -8,6 +8,10 @@ const readStore = (key, fallback) => {
   try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }
   catch (error) { console.error(`Unable to read ${key} from local storage`, error); return fallback; }
 };
+const readStoredIds = key => {
+  const value = readStore(key, []);
+  return Array.isArray(value) ? value.filter(id => typeof id === "string") : [];
+};
 const savedUsers = readStore("mm-users", []);
 const savedBookings = readStore("mm-bookings", []);
 const savedReviews = readStore("mm-reviews", {});
@@ -34,6 +38,10 @@ const state = {
     ? { name: "Your name", email: "", interests: "", goal: "" }
     : savedUser,
   bookings: savedBookings.filter(item => !legacyDemoIds.has(item.mentorId)),
+  notificationMessages: [],
+  readMessageIds: readStoredIds(`mm-read-messages-${savedUser.id || ""}`),
+  newMentorNotifications: readStoredIds(`mm-new-mentors-${savedUser.id || ""}`),
+  readMentorNotificationIds: readStoredIds(`mm-read-mentors-${savedUser.id || ""}`),
   reviews: Object.fromEntries(Object.entries(savedReviews)
     .filter(([mentorId]) => !legacyDemoIds.has(mentorId))
     .map(([mentorId, review]) => [mentorId, Array.isArray(review) ? review : [review]])),
@@ -44,6 +52,8 @@ const state = {
 let selectedProfileImage = state.user.profileImage || "";
 let profileImageTask = Promise.resolve();
 let profileImageSelectionVersion = 0;
+let notificationOwnerId = "";
+let knownMentorIds = null;
 const viewContainer = document.getElementById("view-container");
 const modalRoot = document.getElementById("modal-root");
 let toastTimeout;
@@ -54,8 +64,42 @@ function apiHeaders(json = false) {
   if (json) headers["Content-Type"] = "application/json";
   return headers;
 }
+function initializeNotificationState() {
+  const userId = String(state.user.id || "");
+  if (!userId || notificationOwnerId === userId) return;
+  notificationOwnerId = userId;
+  state.notificationMessages = [];
+  state.readMessageIds = readStoredIds(`mm-read-messages-${userId}`);
+  state.newMentorNotifications = readStoredIds(`mm-new-mentors-${userId}`);
+  state.readMentorNotificationIds = readStoredIds(`mm-read-mentors-${userId}`);
+  knownMentorIds = readStore(`mm-known-mentors-${userId}`, null);
+  if (!Array.isArray(knownMentorIds)) knownMentorIds = null;
+}
+function persistNotificationState() {
+  if (!notificationOwnerId) return;
+  try {
+    localStorage.setItem(`mm-read-messages-${notificationOwnerId}`, JSON.stringify(state.readMessageIds));
+    localStorage.setItem(`mm-new-mentors-${notificationOwnerId}`, JSON.stringify(state.newMentorNotifications));
+    localStorage.setItem(`mm-read-mentors-${notificationOwnerId}`, JSON.stringify(state.readMentorNotificationIds));
+    if (knownMentorIds) localStorage.setItem(`mm-known-mentors-${notificationOwnerId}`, JSON.stringify(knownMentorIds));
+  } catch (error) {
+    console.error("Unable to save notification state", error);
+    logTestError("Notification state save", error);
+  }
+}
+function matchingInterest(user, mentor) {
+  const stopWords = new Set(["about", "after", "also", "and", "are", "for", "from", "have", "into", "our", "the", "their", "them", "with", "you"]);
+  const tokens = value => String(value || "")
+    .toLocaleLowerCase()
+    .split(/[;,]/)
+    .flatMap(part => part.replace(/[^a-z0-9+#. ]/g, " ").split(/\s+/))
+    .filter(token => token.length > 1 && !stopWords.has(token));
+  const userInterests = new Set(tokens(`${user.interests || ""},${user.field || ""}`));
+  return tokens(`${mentor.interests || ""},${mentor.field || ""}`).find(token => userInterests.has(token)) || "";
+}
 async function syncCommunityAccounts() {
   if (!authToken) return;
+  initializeNotificationState();
   const reviewsVersion = reviewSyncVersion;
   try {
     const [response, reviewResponse] = await Promise.all([
@@ -68,11 +112,20 @@ async function syncCommunityAccounts() {
     const previousReviews = JSON.stringify(state.reviews);
     const sharedUsers = (payload.users || []).filter(user => !legacyDemoEmails.has(String(user.email || "").trim().toLowerCase()));
     const byId = new Map(sharedUsers.map(user => [user.id, user]));
-    for (const localUser of state.users) {
-      if (!byId.has(localUser.id) && !legacyDemoIds.has(localUser.id)) byId.set(localUser.id, localUser);
-    }
-
     state.users = [...byId.values()];
+    const activeMentors = state.users.filter(user => user.role === "Mentor" && user.status === "Active" && user.id !== state.user.id);
+    const currentMentorIds = activeMentors.map(user => user.id);
+    if (knownMentorIds === null) {
+      knownMentorIds = currentMentorIds;
+    } else {
+      const knownIds = new Set(knownMentorIds);
+      const newMatches = activeMentors
+        .filter(mentor => !knownIds.has(mentor.id) && matchingInterest(state.user, mentor))
+        .map(mentor => mentor.id);
+      state.newMentorNotifications = [...new Set([...state.newMentorNotifications, ...newMatches])].slice(-20);
+      knownMentorIds = [...new Set([...knownMentorIds, ...newMatches])];
+    }
+    persistNotificationState();
     if (!reviewResponse.ok) throw new Error(`Review request failed (HTTP ${reviewResponse.status}).`);
     const reviewPayload = await readJsonResponse(reviewResponse);
     if (reviewsVersion === reviewSyncVersion) {
@@ -86,6 +139,7 @@ async function syncCommunityAccounts() {
       persist();
       if (state.view !== "messages") render();
     }
+    updateNotificationMenu();
   } catch (error) {
     console.error("Unable to load shared community accounts", error);
     logTestError("Accounts sync", error);
@@ -146,6 +200,7 @@ async function syncConversation(requestId) {
         left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
       );
       if (state.view === "messages" && state.activeConversationId === requestId) {
+        markConversationMessagesRead(requestId);
         const list = document.getElementById("message-list");
         if (list) {
           list.innerHTML = state.messages[requestId].length
@@ -169,6 +224,77 @@ async function syncConversation(requestId) {
       syncConversation(requestId);
     }
   }
+}
+function markConversationMessagesRead(requestId) {
+  const readIds = new Set(state.readMessageIds);
+  for (const message of state.messages[requestId] || []) {
+    if (message.senderId !== state.user.id) readIds.add(message.id);
+  }
+  state.readMessageIds = [...readIds].slice(-500);
+  persistNotificationState();
+  updateNotificationMenu();
+}
+async function syncNotifications() {
+  if (!authToken || !state.user.id) return;
+  initializeNotificationState();
+  try {
+    const response = await fetch("/api/notifications", { headers: apiHeaders() });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || `Notification request failed (HTTP ${response.status}).`);
+    state.notificationMessages = payload.messages || [];
+    updateNotificationMenu();
+  } catch (error) {
+    console.error("Unable to load notifications", error);
+    logTestError("Notifications sync", error);
+  }
+}
+function notificationTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+function updateNotificationMenu() {
+  const menu = document.getElementById("notification-menu");
+  const indicator = document.getElementById("notification-indicator");
+  if (!menu || !indicator) return;
+  const readMessages = new Set(state.readMessageIds);
+  const readMentors = new Set(state.readMentorNotificationIds);
+  const messageItems = [...state.notificationMessages]
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+    .slice(0, 8);
+  const mentorItems = state.newMentorNotifications
+    .map(id => state.users.find(user => user.id === id && user.role === "Mentor" && user.status === "Active"))
+    .filter(Boolean)
+    .slice(-8)
+    .reverse();
+  const unreadCount = messageItems.filter(message => !readMessages.has(message.id)).length +
+    mentorItems.filter(mentor => !readMentors.has(mentor.id)).length;
+  document.getElementById("notifications")?.setAttribute("aria-label", unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications");
+  indicator.hidden = unreadCount === 0;
+  const contents = `<header class="notification-menu-header"><div><h2>Notifications</h2><p>Messages and mentors matched to your interests.</p></div></header>
+    <section class="notification-section"><h3>Messages</h3>${messageItems.length ? messageItems.map(message => `<button class="notification-item ${readMessages.has(message.id) ? "read" : "unread"}" data-notification-message="${safe(message.requestId)}"><span class="notification-item-copy"><strong>${safe(message.senderName || "New message")}</strong><span>${safe(String(message.text || "").slice(0, 120))}</span><small>${safe(notificationTime(message.createdAt))}</small></span></button>`).join("") : `<p class="notification-empty">No new messages.</p>`}</section>
+    <section class="notification-section"><h3>New mentors for you</h3>${mentorItems.length ? mentorItems.map(mentor => `<button class="notification-item ${readMentors.has(mentor.id) ? "read" : "unread"}" data-notification-mentor="${safe(mentor.id)}"><span class="notification-item-copy"><strong>${safe(mentor.name)} joined</strong><span>Shares your interest in ${safe(matchingInterest(state.user, mentor) || mentor.field || mentor.interests || "your interests")}.</span><small>${safe(notificationTime(mentor.createdAt))}</small></span></button>`).join("") : `<p class="notification-empty">We’ll let you know when a new mentor shares your interests.</p>`}</section>`;
+  if (menu.innerHTML !== contents) menu.innerHTML = contents;
+}
+function toggleNotificationMenu() {
+  const button = document.getElementById("notifications");
+  const menu = document.getElementById("notification-menu");
+  if (!button || !menu) return;
+  const open = menu.hidden;
+  if (open) {
+    state.readMessageIds = [...new Set([...state.readMessageIds, ...state.notificationMessages.map(message => message.id)])].slice(-500);
+    state.readMentorNotificationIds = [...new Set([...state.readMentorNotificationIds, ...state.newMentorNotifications])].slice(-100);
+    persistNotificationState();
+  }
+  menu.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  updateNotificationMenu();
+}
+function closeNotificationMenu() {
+  const button = document.getElementById("notifications");
+  const menu = document.getElementById("notification-menu");
+  if (!button || !menu) return;
+  menu.hidden = true;
+  button.setAttribute("aria-expanded", "false");
 }
 function persist() {
   try {
@@ -293,13 +419,14 @@ function matchesMemberSearch(member, query) {
 }
 function mentorCard(mentor) {
   const isMentor = mentor.role === "Mentor";
+  const canRequestChat = state.user.role === "Student" && isMentor;
   const connected = Boolean(connectionFor(mentor.id));
   return `<article class="mentor-card">
     <div class="card-top"><div class="mentor-avatar ${isMentor ? "avatar-blue" : "avatar-you"}">${avatarContent(mentor.name, mentor.profileImage)}</div></div>
     <h3>${safe(mentor.name)}</h3><p class="mentor-role"><strong>${safe(mentor.role)}</strong>${mentor.field ? ` · ${safe(mentor.field)}` : ""}</p>
     <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span></div>
     <p class="mentor-bio">${safe(mentor.goal || mentor.bio || mentor.interests || "This member has shared their profile and preferences.")}</p><div class="tag-list"><span class="tag">${safe(mentor.field || (mentor.interests || "Community member").split(",")[0])}</span></div>
-    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>${isMentor ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request another chat <span>↗</span></button>` : ""}` : isMentor ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request a chat <span>↗</span></button>` : ""}</div>
+    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request another chat <span>↗</span></button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request a chat <span>↗</span></button>` : ""}</div>
   </article>`;
 }
 function renderDiscover() {
@@ -348,12 +475,13 @@ function renderMemberProfile() {
   if (!member) return `<div class="view-wrap"><div class="empty-state"><strong>Profile unavailable.</strong>This account may no longer be active.<br><button class="button-secondary" data-view="discover">Back to community</button></div></div>`;
   const connection = connectionFor(member.id);
   const interests = (member.interests || "").split(",").map(value => value.trim()).filter(Boolean);
+  const canRequestChat = state.user.role === "Student" && member.role === "Mentor";
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">Community profile</div><h1>${safe(member.name)}</h1><p>${safe(member.role)}${member.field ? ` · ${safe(member.field)}` : ""}</p></div><button class="button-quiet" data-view="discover">← Back to community</button></div>
     <div class="public-profile-layout"><section class="profile-card public-profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar ${member.role === "Mentor" ? "avatar-blue" : "avatar-you"}">${avatarContent(member.name, member.profileImage)}</span><div><h2>${safe(member.name)}</h2><p>${safe(member.role)} · Community member</p></div></div><div class="public-preferences">
       <div><strong>School</strong><span>${safe(member.school || "Not shared")}</span></div><div><strong>Year of study</strong><span>${safe(member.year || "Not shared")}</span></div>
       <div class="preference-wide"><strong>Interests</strong><span>${interests.length ? interests.map(safe).join(", ") : "Not shared"}</span></div>
       <div class="preference-wide"><strong>Goals</strong><span>${safe(member.goal || "Not shared")}</span></div>
-    </div><div class="profile-actions">${connection ? `<button class="button-secondary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>${member.role === "Mentor" ? `<button class="button-primary" data-book="${safe(member.id)}">Request another chat</button>` : ""}` : member.role === "Mentor" ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
+    </div><div class="profile-actions">${connection ? `<button class="button-secondary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request another chat</button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Reviews</h2><p>Feedback shared by people who connected with ${safe(member.name.split(" ")[0])}.</p></div></div><div class="panel-body">${reviewListMarkup(member.id)}</div></section></div></div>`;
 }
 function renderMessages() {
@@ -378,6 +506,7 @@ function render() {
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.view === state.view));
   viewContainer.innerHTML = (views[state.view] || renderDiscover)();
   updateShell();
+  updateNotificationMenu();
   navigationOwnerId = state.user.id || navigationOwnerId;
   try {
     localStorage.setItem("mm-navigation", JSON.stringify({
@@ -411,9 +540,13 @@ function deleteMemberData(member) {
   state.reports = state.reports.filter(report => report.userId !== member.id);
 }
 function confirmAccountDeletion(member, ownAccount = false) {
-  openModal("Delete this account?", "This permanently removes the account and associated local data. This cannot be undone.", `<div class="modal-form"><p style="font-size:12px;color:#656a60;line-height:1.6;margin:0">Account: <strong>${safe(member.name)}</strong>${member.email ? ` (${safe(member.email)})` : ""}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep account</button><button class="button-danger" type="button" ${ownAccount ? "data-delete-own" : `data-confirm-delete="${safe(member.id)}"`}>Delete permanently</button></div></div>`);
+  openModal("Delete this account?", "Your account will be deactivated now and permanently deleted after 24 hours. Sign in within that time to restore it.", `<div class="modal-form"><p style="font-size:12px;color:#656a60;line-height:1.6;margin:0">Account: <strong>${safe(member.name)}</strong>${member.email ? ` (${safe(member.email)})` : ""}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep account</button><button class="button-danger" type="button" ${ownAccount ? "data-delete-own" : `data-confirm-delete="${safe(member.id)}"`}>Delete account</button></div></div>`);
 }
 function openBooking(mentorId) {
+  if (state.user.role !== "Student") {
+    showToast("Only students can request chats with mentors.");
+    return;
+  }
   const mentor = state.users.find(item => item.id === mentorId && item.role === "Mentor"); if (!mentor) return;
   const minDate = new Date(); minDate.setDate(minDate.getDate() + 1);
   const maxDate = new Date(); maxDate.setDate(maxDate.getDate() + 60);
@@ -433,12 +566,29 @@ function showAuth(mode = "login") {
   const authRoot = document.getElementById("auth-root");
   authRoot.classList.add("active");
   const isSignup = mode === "signup";
-  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There's more than one way to get where you're going.</h1><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Pick up where your next step begins."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div><div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
+  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There's more than one way to get where you're going.</h1><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Sign in within 24 hours of requesting deletion to restore your account."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div><div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
   document.querySelector("[data-auth-switch]").addEventListener("click", () => showAuth(isSignup ? "login" : "signup"));
 }
 document.addEventListener("click", async event => {
+  if (!event.target.closest(".notification-menu-wrap")) closeNotificationMenu();
   const target = event.target.closest("button");
   if (!target) return;
+  if (target.id === "notifications") { toggleNotificationMenu(); return; }
+  if (target.hasAttribute("data-notification-message")) {
+    closeNotificationMenu();
+    state.activeConversationId = target.dataset.notificationMessage;
+    state.view = "messages";
+    render();
+    syncConversation(state.activeConversationId);
+    return;
+  }
+  if (target.hasAttribute("data-notification-mentor")) {
+    closeNotificationMenu();
+    state.profileId = target.dataset.notificationMentor;
+    state.view = "member";
+    render();
+    return;
+  }
   if (target.dataset.view) { closeModal(); state.view = target.dataset.view; render(); document.getElementById("sidebar").classList.remove("open"); return; }
   if (target.hasAttribute("data-profile")) { state.profileId = target.dataset.profile; state.view = "member"; render(); return; }
   if (target.hasAttribute("data-message")) {
@@ -524,6 +674,22 @@ document.addEventListener("click", async event => {
   if (target.hasAttribute("data-delete-own")) {
     const email = state.user.email;
     const ownMember = state.users.find(user => user.email === email);
+    target.disabled = true;
+    try {
+      const response = await fetch("/api/account/delete", {
+        method: "POST",
+        headers: apiHeaders(true),
+        body: JSON.stringify({})
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `Account deletion failed (HTTP ${response.status}).`);
+    } catch (error) {
+      console.error("Unable to schedule account deletion", error);
+      logTestError("Account deletion", error);
+      showToast(error.message || "Your account could not be scheduled for deletion.");
+      target.disabled = false;
+      return;
+    }
     state.users = state.users.filter(user => user.email !== email);
     authUsers = authUsers.filter(user => normalizeEmail(user.email) !== normalizeEmail(email));
     if (ownMember) state.reports = state.reports.filter(report => report.userId !== ownMember.id);
@@ -532,7 +698,7 @@ document.addEventListener("click", async event => {
     state.user = { name: "Your name", email: "", interests: "", goal: "" };
     authToken = "";
     localStorage.removeItem("mm-token");
-    persist(); closeModal(); showAuth("signup"); showToast("Your account and local data have been deleted."); return;
+    persist(); closeModal(); showAuth("login"); showToast("Account scheduled for deletion. Sign in within 24 hours to restore it."); return;
   }
   if (target.id === "notifications") { showToast("You're all caught up — nice work."); }
 });
@@ -681,6 +847,7 @@ document.addEventListener("submit", async event => {
     const data = new FormData(form);
     const email = normalizeEmail(data.get("email"));
     const submitButton = form.querySelector('button[type="submit"]');
+    let accountRestored = false;
     submitButton.disabled = true;
     try {
       if (data.get("name")) {
@@ -714,6 +881,7 @@ document.addEventListener("submit", async event => {
         if (!payload.token) throw new Error("Sign-in did not return a session token.");
         authToken = payload.token;
         localStorage.setItem("mm-token", JSON.stringify(authToken));
+        accountRestored = Boolean(payload.restored);
         if (navigationOwnerId && navigationOwnerId !== payload.user.id) {
           state.view = "discover";
           state.profileId = "";
@@ -722,8 +890,10 @@ document.addEventListener("submit", async event => {
         navigationOwnerId = payload.user.id;
         state.user = payload.user;
         selectedProfileImage = state.user.profileImage || "";
+        initializeNotificationState();
         await syncCommunityAccounts();
         await syncConnections();
+        await syncNotifications();
       }
     } catch (error) {
       console.error("Account authentication request failed", error);
@@ -734,18 +904,23 @@ document.addEventListener("submit", async event => {
       submitButton.disabled = false;
     }
     state.user.email = email;
-    persist(); document.getElementById("auth-root").classList.remove("active"); document.querySelector(".app-shell").style.display = ""; render(); showToast("You're in. Welcome to the community!");
+    persist(); document.getElementById("auth-root").classList.remove("active"); document.querySelector(".app-shell").style.display = ""; render(); showToast(accountRestored ? "Your account has been restored. Welcome back!" : "You're in. Welcome to the community!");
   }
 });
 document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
 modalRoot.addEventListener("click", event => { if (event.target === modalRoot) closeModal(); });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal(); });
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal();
+  if (event.key === "Escape") closeNotificationMenu();
+});
 render();
 if (normalizeEmail(savedUser.email) && authToken) {
   document.getElementById("auth-root").classList.remove("active");
   document.querySelector(".app-shell").style.display = "";
+  initializeNotificationState();
   syncCommunityAccounts();
   syncConnections();
+  syncNotifications();
 } else {
   showAuth("login");
   syncCommunityAccounts();
@@ -755,3 +930,4 @@ setInterval(() => {
   syncConnections();
   if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
 }, 1800);
+setInterval(syncNotifications, 15000);

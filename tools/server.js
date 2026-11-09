@@ -61,9 +61,7 @@ async function loadAccounts() {
       )
     `;
     await sql`DELETE FROM mentorship_accounts WHERE email = 'test@gmail.com'`;
-    const result = await sql`SELECT account FROM mentorship_accounts`;
-    const rows = Array.isArray(result) ? result : (result.rows || []);
-    accounts = rows.map(row => typeof row.account === "string" ? JSON.parse(row.account) : row.account).filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
+    await refreshAccounts();
     return;
   }
 
@@ -80,6 +78,15 @@ async function loadAccounts() {
     accounts = [];
     await saveAccounts();
   }
+}
+
+async function refreshAccounts() {
+  if (!sql) return;
+  const result = await sql`SELECT account FROM mentorship_accounts`;
+  const rows = Array.isArray(result) ? result : (result.rows || []);
+  accounts = rows
+    .map(row => typeof row.account === "string" ? JSON.parse(row.account) : row.account)
+    .filter(account => !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()));
 }
 
 async function loadChatRequests() {
@@ -281,6 +288,52 @@ function saveReviews() {
   return reviewsWriteQueue;
 }
 
+async function permanentlyDeleteAccount(account) {
+  const accountEmail = String(account.email || "").trim().toLowerCase();
+  const accountRequests = chatRequests.filter(request =>
+    request.mentorId === account.id ||
+    request.requesterId === account.id ||
+    String(request.requesterEmail || "").trim().toLowerCase() === accountEmail
+  );
+  const requestIds = new Set(accountRequests.map(request => request.id));
+  const accountMessages = messages.filter(message =>
+    requestIds.has(message.requestId) || message.senderId === account.id
+  );
+  const accountReviews = reviews.filter(review =>
+    review.mentorId === account.id || review.reviewerId === account.id
+  );
+
+  accounts = accounts.filter(item => item.id !== account.id);
+  chatRequests = chatRequests.filter(request => !accountRequests.includes(request));
+  messages = messages.filter(message => !accountMessages.includes(message));
+  reviews = reviews.filter(review => !accountReviews.includes(review));
+
+  if (sql) {
+    for (const request of accountRequests) {
+      await sql`DELETE FROM mentorship_chat_requests WHERE id = ${request.id}`;
+    }
+    for (const message of accountMessages) {
+      await sql`DELETE FROM mentorship_messages WHERE id = ${message.id}`;
+    }
+    for (const review of accountReviews) {
+      await sql`DELETE FROM mentorship_reviews WHERE id = ${review.id}`;
+    }
+  }
+
+  await Promise.all([saveAccounts(), saveChatRequests(), saveMessages(), saveReviews()]);
+}
+
+async function expirePendingDeletions() {
+  const now = Date.now();
+  const expiredAccounts = accounts.filter(account =>
+    account.status === "PendingDeletion" &&
+    Date.parse(account.deletionExpiresAt) <= now
+  );
+  for (const account of expiredAccounts) {
+    await permanentlyDeleteAccount(account);
+  }
+}
+
 function sendJson(response, status, body) {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -338,6 +391,7 @@ function publicAccount(account) {
     interests: account.interests,
     goal: account.goal,
     status: account.status,
+    createdAt: account.createdAt || "",
     profileImage: account.profileImage || ""
   };
 }
@@ -458,8 +512,12 @@ async function handleRegister(request, response) {
     sendJson(response, 400, { error: "Enter a name, valid email address, and password of at least 8 characters." });
     return;
   }
-  if (accounts.some(account => account.email === email)) {
-    sendJson(response, 409, { error: "An account with that email already exists. Please sign in instead." });
+  const existingAccount = accounts.find(account => account.email === email);
+  if (existingAccount) {
+    const error = existingAccount.status === "PendingDeletion"
+      ? "This account is scheduled for deletion. Sign in within 24 hours to restore it."
+      : "An account with that email already exists. Please sign in instead.";
+    sendJson(response, 409, { error });
     return;
   }
 
@@ -475,6 +533,7 @@ async function handleRegister(request, response) {
     interests: "",
     goal: "",
     status: "Active",
+    createdAt: new Date().toISOString(),
     emailVerified: true,
     ...credentials
   };
@@ -502,6 +561,13 @@ async function handleLogin(request, response) {
     sendJson(response, 401, { error: "Incorrect email or password." });
     return;
   }
+  const restored = account.status === "PendingDeletion" &&
+    Date.parse(account.deletionExpiresAt) > Date.now();
+  if (restored) {
+    account.status = "Active";
+    delete account.deletionRequestedAt;
+    delete account.deletionExpiresAt;
+  }
   if (account.status !== "Active") {
     sendJson(response, 403, { error: "This account is suspended. Contact an administrator for help." });
     return;
@@ -510,7 +576,7 @@ async function handleLogin(request, response) {
   account.sessionTokenHash = crypto.createHash("sha256").update(token).digest("hex");
   account.sessionExpiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
   await saveAccounts();
-  sendJson(response, 200, { user: { ...publicAccount(account), email: account.email }, token });
+  sendJson(response, 200, { user: { ...publicAccount(account), email: account.email }, token, restored });
 }
 
 
@@ -544,13 +610,20 @@ async function serveStatic(url, response) {
 }
 
 async function handleRequest(request, response) {
+  await expirePendingDeletions();
   const url = new URL(request.url, appOrigin);
   if (request.method === "GET" && url.pathname === "/api/accounts") {
     if (!await authenticatedAccount(request)) {
       sendJson(response, 401, { error: "Please sign in to browse community profiles." });
       return;
     }
-    const users = accounts
+    let communityAccounts = accounts;
+    if (sql) {
+      const result = await sql`SELECT account FROM mentorship_accounts`;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      communityAccounts = rows.map(row => typeof row.account === "string" ? JSON.parse(row.account) : row.account);
+    }
+    const users = communityAccounts
       .filter(account => account.status === "Active" && !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()))
       .map(publicAccount)
     sendJson(response, 200, { users });
@@ -586,6 +659,22 @@ async function handleRequest(request, response) {
     sendJson(response, 200, { user: publicAccount(account) });
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/account/delete") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to delete your account." });
+      return;
+    }
+    const deletionRequestedAt = Date.now();
+    authenticated.status = "PendingDeletion";
+    authenticated.deletionRequestedAt = new Date(deletionRequestedAt).toISOString();
+    authenticated.deletionExpiresAt = new Date(deletionRequestedAt + 24 * 60 * 60 * 1000).toISOString();
+    delete authenticated.sessionTokenHash;
+    delete authenticated.sessionExpiresAt;
+    await saveAccounts();
+    sendJson(response, 200, { deletionExpiresAt: authenticated.deletionExpiresAt });
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/chat-requests") {
     const body = await readJson(request);
     const mentorId = typeof body.mentorId === "string" ? body.mentorId.trim() : "";
@@ -597,8 +686,12 @@ async function handleRequest(request, response) {
     }
     const mentor = accounts.find(account => account.id === mentorId && account.role === "Mentor" && account.status === "Active");
     const requester = authenticated;
-    if (!mentor || requester.role !== "Student" || requester.id !== body.requesterId || requester.email !== requesterEmail) {
+    if (!mentor || requester.id !== body.requesterId || requester.email !== requesterEmail) {
       sendJson(response, 400, { error: "A valid mentor and requester are required." });
+      return;
+    }
+    if (requester.role !== "Student") {
+      sendJson(response, 403, { error: "Only students can request chats with mentors." });
       return;
     }
     const chatRequest = {
@@ -655,6 +748,48 @@ async function handleRequest(request, response) {
       };
     });
     sendJson(response, 200, { requests });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/notifications") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to view notifications." });
+      return;
+    }
+    const connections = (await listChatRequestsForAccount(authenticated))
+      .filter(connection => connection.status !== "Cancelled");
+    const notifications = [];
+    for (const connection of connections) {
+      let incomingMessages;
+      if (sql) {
+        const result = await sql`
+          SELECT message FROM mentorship_messages
+          WHERE request_id = ${connection.id}
+            AND message->>'senderId' <> ${authenticated.id}
+          ORDER BY message->>'createdAt' DESC
+          LIMIT 5
+        `;
+        const rows = Array.isArray(result) ? result : (result.rows || []);
+        incomingMessages = rows.map(row => typeof row.message === "string" ? JSON.parse(row.message) : row.message);
+      } else {
+        incomingMessages = messages
+          .filter(message => message.requestId === connection.id && message.senderId !== authenticated.id)
+          .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+          .slice(0, 5);
+      }
+      for (const message of incomingMessages) {
+        notifications.push({
+          id: message.id,
+          requestId: connection.id,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          text: message.text,
+          createdAt: message.createdAt
+        });
+      }
+    }
+    notifications.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+    sendJson(response, 200, { messages: notifications.slice(0, 30) });
     return;
   }
   if (request.method === "PATCH" && url.pathname === "/api/chat-requests") {

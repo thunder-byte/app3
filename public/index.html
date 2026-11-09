@@ -44,7 +44,10 @@
           <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
           <div class="breadcrumb">Your space <span>/</span> <strong id="crumb-label">Discover mentors</strong></div>
           <div class="topbar-actions">
-            <button class="icon-button notification-button" aria-label="Notifications" id="notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><i></i></button>
+            <div class="notification-menu-wrap">
+              <button class="icon-button notification-button" aria-label="Notifications" id="notifications" aria-expanded="false" aria-controls="notification-menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><i id="notification-indicator" hidden></i></button>
+              <section class="notification-menu" id="notification-menu" aria-label="Notifications" hidden></section>
+            </div>
             <span class="topbar-divider"></span>
             <button class="topbar-user" id="account-button" aria-label="Account menu" aria-haspopup="dialog"><span class="avatar avatar-you">YN</span><span class="topbar-user-copy"><span id="topbar-name">Your name</span><small id="account-role">Student account</small></span><span class="chevron">⌄</span></button>
           </div>

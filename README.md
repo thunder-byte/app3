@@ -11,6 +11,8 @@ Accounts are stored in `data/accounts.json` on local servers or in the `mentorsh
 Signed-in students and mentors can browse community profiles, including each member's school, year, interests, and goals. Members can upload a profile picture from **My profile**; images are resized in the browser and shared on community profiles. Students can request multiple sessions with the same mentor and exchange messages after connecting. Mentor profiles show reviews and their average rating. Local deployments store messages and reviews in `data/messages.json` and `data/reviews.json`; Neon deployments use `mentorship_messages` and `mentorship_reviews`.
 
 After deploying this update, existing users may need to sign in again to start a secure session for profile and messaging features.
+
+Deleting an account deactivates it immediately and schedules permanent deletion after 24 hours. Sign in with the same email and password during that window to restore the account.
 ## Neon on Vercel
 
 Connect the Vercel project to the `neon-aureolin-cushion` Neon database. Add its connection string as `POSTGRES_URL` (or `DATABASE_URL`) in the Vercel project environment settings. Neon-backed deployments store accounts in `mentorship_accounts`; local JSON storage is used only for development.
