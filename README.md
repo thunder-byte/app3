@@ -7,6 +7,10 @@
 3. Open <http://localhost:3000>, create an account, and sign in immediately with your email and password.
 
 Accounts are stored in `data/accounts.json` on local servers or in the `mentorship_accounts` Neon table on Vercel. Passwords are stored as salted PBKDF2 hashes. Email verification is not used.
+
+Signed-in students and mentors can browse community profiles, including each member's school, year, interests, and goals. A student can start a connection by requesting a mentor session; both people can then exchange messages. Mentor reviews are shown on their profiles. Local deployments store messages and reviews in `data/messages.json` and `data/reviews.json`; Neon deployments use `mentorship_messages` and `mentorship_reviews`.
+
+After deploying this update, existing users may need to sign in again to start a secure session for profile and messaging features.
 ## Neon on Vercel
 
 Connect the Vercel project to the `neon-aureolin-cushion` Neon database. Add its connection string as `POSTGRES_URL` (or `DATABASE_URL`) in the Vercel project environment settings. Neon-backed deployments store accounts in `mentorship_accounts`; local JSON storage is used only for development.

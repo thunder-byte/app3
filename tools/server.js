@@ -28,13 +28,19 @@ const vercelDataDirectory = process.env.VERCEL ? "/tmp/mentorshipmatch-data" : n
 const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || vercelDataDirectory || path.join(root, "data"));
 const accountsPath = path.join(dataDirectory, "accounts.json");
 const requestsPath = path.join(dataDirectory, "chat-requests.json");
+const messagesPath = path.join(dataDirectory, "messages.json");
+const reviewsPath = path.join(dataDirectory, "reviews.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
 const maxRequestBytes = 16 * 1024;
 let accounts = [];
 let chatRequests = [];
+let messages = [];
+let reviews = [];
 let writeQueue = Promise.resolve();
 let requestsWriteQueue = Promise.resolve();
+let messagesWriteQueue = Promise.resolve();
+let reviewsWriteQueue = Promise.resolve();
 const requestWindows = new Map();
 const hiddenDemoEmails = new Set(["test@gmail.com"]);
 
@@ -101,6 +107,54 @@ async function loadChatRequests() {
   }
 }
 
+async function loadMessages() {
+  if (sql) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS mentorship_messages (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        message JSONB NOT NULL
+      )
+    `;
+    const result = await sql`SELECT message FROM mentorship_messages ORDER BY id`;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    messages = rows.map(row => typeof row.message === "string" ? JSON.parse(row.message) : row.message);
+    return;
+  }
+  await fs.mkdir(dataDirectory, { recursive: true });
+  try {
+    const storedData = JSON.parse(await fs.readFile(messagesPath, "utf8"));
+    messages = Array.isArray(storedData) ? storedData : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    messages = [];
+  }
+}
+
+async function loadReviews() {
+  if (sql) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS mentorship_reviews (
+        id TEXT PRIMARY KEY,
+        mentor_id TEXT NOT NULL,
+        review JSONB NOT NULL
+      )
+    `;
+    const result = await sql`SELECT review FROM mentorship_reviews`;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    reviews = rows.map(row => typeof row.review === "string" ? JSON.parse(row.review) : row.review);
+    return;
+  }
+  await fs.mkdir(dataDirectory, { recursive: true });
+  try {
+    const storedData = JSON.parse(await fs.readFile(reviewsPath, "utf8"));
+    reviews = Array.isArray(storedData) ? storedData : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    reviews = [];
+  }
+}
+
 function saveAccounts() {
   writeQueue = writeQueue.then(async () => {
     if (sql) {
@@ -158,6 +212,48 @@ function saveChatRequests() {
   return requestsWriteQueue;
 }
 
+function saveMessages() {
+  messagesWriteQueue = messagesWriteQueue.then(async () => {
+    if (sql) {
+      for (const message of messages) {
+        await sql`
+          INSERT INTO mentorship_messages (id, request_id, message)
+          VALUES (${message.id}, ${message.requestId}, ${JSON.stringify(message)})
+          ON CONFLICT (id) DO UPDATE SET
+            request_id = EXCLUDED.request_id,
+            message = EXCLUDED.message
+        `;
+      }
+      return;
+    }
+    const temporaryPath = `${messagesPath}.tmp`;
+    await fs.writeFile(temporaryPath, JSON.stringify(messages, null, 2), { mode: 0o600 });
+    await fs.rename(temporaryPath, messagesPath);
+  });
+  return messagesWriteQueue;
+}
+
+function saveReviews() {
+  reviewsWriteQueue = reviewsWriteQueue.then(async () => {
+    if (sql) {
+      for (const review of reviews) {
+        await sql`
+          INSERT INTO mentorship_reviews (id, mentor_id, review)
+          VALUES (${review.id}, ${review.mentorId}, ${JSON.stringify(review)})
+          ON CONFLICT (id) DO UPDATE SET
+            mentor_id = EXCLUDED.mentor_id,
+            review = EXCLUDED.review
+        `;
+      }
+      return;
+    }
+    const temporaryPath = `${reviewsPath}.tmp`;
+    await fs.writeFile(temporaryPath, JSON.stringify(reviews, null, 2), { mode: 0o600 });
+    await fs.rename(temporaryPath, reviewsPath);
+  });
+  return reviewsWriteQueue;
+}
+
 function sendJson(response, status, body) {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -208,7 +304,6 @@ function publicAccount(account) {
   return {
     id: account.id,
     name: account.name,
-    email: account.email,
     role: account.role,
     field: account.field,
     school: account.school,
@@ -227,6 +322,18 @@ async function passwordRecord(password, salt = crypto.randomBytes(16)) {
 function safeEqualHex(leftHex, rightHex) {
   if (!/^[0-9a-f]+$/i.test(leftHex) || !/^[0-9a-f]+$/i.test(rightHex) || leftHex.length !== rightHex.length || leftHex.length % 2 !== 0) return false;
   return crypto.timingSafeEqual(Buffer.from(leftHex, "hex"), Buffer.from(rightHex, "hex"));
+}
+
+function authenticatedAccount(request) {
+  const authorization = String(request.headers.authorization || "");
+  const tokenMatch = authorization.match(/^Bearer ([A-Za-z0-9_-]+)$/);
+  if (!tokenMatch) return null;
+  const tokenHash = crypto.createHash("sha256").update(tokenMatch[1]).digest("hex");
+  return accounts.find(account =>
+    account.status === "Active" &&
+    Number(account.sessionExpiresAt) > Date.now() &&
+    safeEqualHex(String(account.sessionTokenHash || ""), tokenHash)
+  ) || null;
 }
 
 function escapeHtml(value) {
@@ -359,7 +466,11 @@ async function handleLogin(request, response) {
     sendJson(response, 403, { error: "This account is suspended. Contact an administrator for help." });
     return;
   }
-  sendJson(response, 200, { user: publicAccount(account) });
+  const token = crypto.randomBytes(32).toString("base64url");
+  account.sessionTokenHash = crypto.createHash("sha256").update(token).digest("hex");
+  account.sessionExpiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+  await saveAccounts();
+  sendJson(response, 200, { user: { ...publicAccount(account), email: account.email }, token });
 }
 
 
@@ -395,27 +506,60 @@ async function serveStatic(url, response) {
 async function handleRequest(request, response) {
   const url = new URL(request.url, appOrigin);
   if (request.method === "GET" && url.pathname === "/api/accounts") {
-    response.setHeader?.("Access-Control-Allow-Origin", "*");
+    if (!authenticatedAccount(request)) {
+      sendJson(response, 401, { error: "Please sign in to browse community profiles." });
+      return;
+    }
     const users = accounts
-      .filter(account => account.role === "Mentor" && account.status !== "Suspended")
+      .filter(account => account.status === "Active" && !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()))
       .map(publicAccount)
-      .filter(account => !hiddenDemoEmails.has(account.email));
     sendJson(response, 200, { users });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/account/profile") {
+    const body = await readJson(request);
+    const authenticated = authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to update your profile." });
+      return;
+    }
+    const account = accounts.find(item => item.id === body.id && item.id === authenticated.id);
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!account || !name || name.length > 100) {
+      sendJson(response, 400, { error: "A valid account and name are required." });
+      return;
+    }
+    account.name = name;
+    account.role = body.role === "Mentor" ? "Mentor" : "Student";
+    account.school = typeof body.school === "string" ? body.school.trim().slice(0, 150) : "";
+    account.year = typeof body.year === "string" ? body.year.slice(0, 50) : "";
+    account.interests = typeof body.interests === "string" ? body.interests.trim().slice(0, 500) : "";
+    account.goal = typeof body.goal === "string" ? body.goal.trim().slice(0, 1000) : "";
+    account.field = account.interests.split(",")[0].trim();
+    await saveAccounts();
+    sendJson(response, 200, { user: publicAccount(account) });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/chat-requests") {
     const body = await readJson(request);
     const mentorId = typeof body.mentorId === "string" ? body.mentorId.trim() : "";
     const requesterEmail = typeof body.requesterEmail === "string" ? body.requesterEmail.trim().toLowerCase() : "";
+    const authenticated = authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to start a connection." });
+      return;
+    }
     const mentor = accounts.find(account => account.id === mentorId && account.role === "Mentor" && account.status === "Active");
-    if (!mentor || !requesterEmail) {
+    const requester = authenticated;
+    if (!mentor || requester.role !== "Student" || requester.id !== body.requesterId || requester.email !== requesterEmail) {
       sendJson(response, 400, { error: "A valid mentor and requester are required." });
       return;
     }
     const chatRequest = {
       id: typeof body.id === "string" && body.id ? body.id : `booking-${Date.now()}`,
       mentorId,
-      requesterEmail,
+      requesterId: requester.id,
+      requesterEmail: requester.email,
       topic: String(body.topic || "").trim().slice(0, 200),
       date: String(body.date || "").slice(0, 20),
       time: String(body.time || "").slice(0, 20),
@@ -431,11 +575,136 @@ async function handleRequest(request, response) {
   }
   if (request.method === "GET" && url.pathname === "/api/chat-requests") {
     const mentorId = url.searchParams.get("mentorId") || "";
+    const authenticated = authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to view your connections." });
+      return;
+    }
+    if (authenticated.id !== mentorId || authenticated.role !== "Mentor") {
+      sendJson(response, 403, { error: "Only this mentor can view their connection requests." });
+      return;
+    }
     const requests = chatRequests.filter(request => request.mentorId === mentorId).map(request => {
       const requester = accounts.find(account => account.email === request.requesterEmail);
-      return { ...request, requesterName: requester?.name || request.requesterEmail, requesterSchool: requester?.school || "", requesterYear: requester?.year || "", requesterInterests: requester?.interests || "", requesterGoal: requester?.goal || "" };
+      return { ...request, requesterId: request.requesterId || requester?.id || "", requesterName: requester?.name || request.requesterEmail, requesterSchool: requester?.school || "", requesterYear: requester?.year || "", requesterInterests: requester?.interests || "", requesterGoal: requester?.goal || "" };
     });
     sendJson(response, 200, { requests });
+    return;
+  }
+  if (request.method === "PATCH" && url.pathname === "/api/chat-requests") {
+    const body = await readJson(request);
+    const connection = chatRequests.find(item => item.id === body.id);
+    const authenticated = authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to cancel this connection." });
+      return;
+    }
+    const userId = authenticated.id;
+    const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
+    if (!connection || (userId !== connection.mentorId && userId !== requesterId)) {
+      sendJson(response, 403, { error: "Only members in this connection can cancel it." });
+      return;
+    }
+    connection.status = "Cancelled";
+    await saveChatRequests();
+    sendJson(response, 200, { request: connection });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/messages") {
+    const requestId = url.searchParams.get("requestId") || "";
+    const authenticated = authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to view messages." });
+      return;
+    }
+    const userId = authenticated.id;
+    const connection = chatRequests.find(item => item.id === requestId && item.status !== "Cancelled");
+    const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
+    if (!connection || (userId !== connection.mentorId && userId !== requesterId)) {
+      sendJson(response, 403, { error: "Messages are available only to members in this connection." });
+      return;
+    }
+    const conversation = messages
+      .filter(message => message.requestId === requestId)
+      .map(({ senderEmail, ...message }) => message)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    sendJson(response, 200, { messages: conversation });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/messages") {
+    const body = await readJson(request);
+    const requestId = typeof body.requestId === "string" ? body.requestId : "";
+    const authenticated = authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to send messages." });
+      return;
+    }
+    const senderId = authenticated.id;
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    const connection = chatRequests.find(item => item.id === requestId && item.status !== "Cancelled");
+    const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
+    const sender = accounts.find(account => account.id === senderId && account.status === "Active");
+    if (!connection || !sender || (senderId !== connection.mentorId && senderId !== requesterId) || !text || text.length > 2000) {
+      sendJson(response, 400, { error: "A valid connection and message are required." });
+      return;
+    }
+    const message = {
+      id: crypto.randomUUID(),
+      requestId,
+      senderId,
+      senderName: sender.name,
+      text,
+      createdAt: new Date().toISOString()
+    };
+    messages.push(message);
+    await saveMessages();
+    sendJson(response, 201, { message });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/reviews") {
+    const publicReviews = reviews.map(review => {
+      const reviewer = accounts.find(account => account.id === review.reviewerId);
+      return { id: review.id, mentorId: review.mentorId, reviewerId: review.reviewerId, rating: review.rating, text: review.text, reviewerName: reviewer?.name || "Community member", createdAt: review.createdAt };
+    });
+    sendJson(response, 200, { reviews: publicReviews });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/reviews") {
+    const body = await readJson(request);
+    const mentorId = typeof body.mentorId === "string" ? body.mentorId : "";
+    const authenticated = authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to share a review." });
+      return;
+    }
+    const reviewerId = authenticated.id;
+    if (body.reviewerId !== reviewerId) {
+      sendJson(response, 403, { error: "A review can only be shared from your own account." });
+      return;
+    }
+    const rating = Number(body.rating);
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    const connected = chatRequests.some(item => item.mentorId === mentorId && item.status !== "Cancelled" &&
+      ((item.requesterId && item.requesterId === reviewerId) || accounts.find(account => account.id === reviewerId)?.email === item.requesterEmail));
+    const mentor = accounts.find(account => account.id === mentorId && account.role === "Mentor" && account.status === "Active");
+    if (!mentor || !connected || !Number.isInteger(rating) || rating < 1 || rating > 5 || !text || text.length > 1000) {
+      sendJson(response, 400, { error: "A valid connected member, rating, and review are required." });
+      return;
+    }
+    const existing = reviews.find(review => review.mentorId === mentorId && review.reviewerId === reviewerId);
+    const review = {
+      id: existing?.id || crypto.randomUUID(),
+      mentorId,
+      reviewerId,
+      rating,
+      text,
+      createdAt: existing?.createdAt || new Date().toISOString()
+    };
+    if (existing) Object.assign(existing, review);
+    else reviews.push(review);
+    await saveReviews();
+    const reviewer = accounts.find(account => account.id === reviewerId);
+    sendJson(response, 201, { review: { id: review.id, mentorId, reviewerId, rating, text, reviewerName: reviewer?.name || "Community member", createdAt: review.createdAt } });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/auth/register") {
@@ -461,7 +730,7 @@ function requestErrorHandler(request, response) {
 }
 
 function ensureAccountsLoaded() {
-  if (!accountsReady) accountsReady = Promise.all([loadAccounts(), loadChatRequests()]);
+  if (!accountsReady) accountsReady = Promise.all([loadAccounts(), loadChatRequests(), loadMessages(), loadReviews()]);
   return accountsReady;
 }
 
