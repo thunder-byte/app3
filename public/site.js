@@ -277,6 +277,9 @@ function connectionFor(memberId) {
       Boolean(requester?.email && normalizeEmail(requester.email) === normalizeEmail(booking.requesterEmail));
   });
 }
+function memberField(member) {
+  return String(member.field || member.interests?.split(",")[0] || "").trim();
+}
 function mentorCard(mentor) {
   const isMentor = mentor.role === "Mentor";
   const connected = Boolean(connectionFor(mentor.id));
@@ -290,9 +293,12 @@ function mentorCard(mentor) {
 }
 function renderDiscover() {
   const activeMembers = state.users.filter(user => user.status === "Active" && user.id !== state.user.id);
+  const fields = [...new Map(activeMembers.map(memberField).filter(Boolean).map(field => [field.toLocaleLowerCase(), field])).values()]
+    .sort((a, b) => a.localeCompare(b));
+  const activeField = fields.find(field => field.toLocaleLowerCase() === state.filter.toLocaleLowerCase()) || "All fields";
   const matches = activeMembers.filter(mentor => {
     const searchMatch = `${mentor.name} ${mentor.role} ${mentor.field || ""} ${mentor.interests || ""} ${mentor.goal || ""}`.toLowerCase().includes(state.query.toLowerCase());
-    return searchMatch && (state.filter === "All fields" || mentor.field === state.filter);
+    return searchMatch && (activeField === "All fields" || memberField(mentor).toLocaleLowerCase() === activeField.toLocaleLowerCase());
   });
   return `<div class="view-wrap">
     <section class="hero"><div><div class="eyebrow">A little guidance goes a long way</div><h1>Your future has a friend in it.</h1><p>Meet students and mentors, explore their interests, and connect when you're ready.</p></div><div class="hero-side"><div class="match-pill">✳ &nbsp;<b>${activeMembers.length} members</b> available</div></div></section>
@@ -301,7 +307,7 @@ function renderDiscover() {
     </section>
     <section id="mentor-section"><div class="section-heading"><div><h2>Community members</h2><p>Explore member profiles and see what they're interested in.</p></div><button class="button-quiet" data-view="sessions">Your sessions <span>→</span></button></div>
       <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search by name, role, or interest..." value="${safe(state.query)}" aria-label="Search mentors"></label>
-        <select class="filter-select" id="field-filter" aria-label="Filter by industry">${["All fields", "Technology", "Design", "Science", "Business", "Healthcare", "Education"].map(field => `<option ${state.filter === field ? "selected" : ""}>${field}</option>`).join("")}</select>
+        <select class="filter-select" id="field-filter" aria-label="Filter by member field">${["All fields", ...fields].map(field => `<option value="${safe(field)}" ${activeField === field ? "selected" : ""}>${safe(field)}</option>`).join("")}</select>
         <span class="result-count">${matches.length} mentors</span></div>
       <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>No community profiles yet.</strong>Member profiles will appear here once they join the community.</div>`}</div>
     </section></div>`;
