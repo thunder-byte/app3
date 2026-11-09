@@ -36,14 +36,18 @@ const savedReviews = readStore("mm-reviews", {});
 const savedReports = readStore("mm-reports", []);
 const savedUser = readStore("mm-user", { name: "Your name", email: "", interests: "", goal: "" });
 const savedToken = readStore("mm-token", "");
+const savedNavigation = readStore("mm-navigation", null);
+const validViews = new Set(["discover", "sessions", "profile", "member", "admin", "messages"]);
 const savedAuthUsers = readStore("mm-auth-users", []);
 const savedUsersHaveClientCredentials = savedUsers.some(user => user.passwordSalt || user.passwordHash);
 let authUsers = savedAuthUsers;
 let authToken = savedToken;
+let navigationOwnerId = savedNavigation?.userId || "";
+const restoreNavigation = savedNavigation && savedNavigation.userId === savedUser.id;
 const state = {
-  view: "discover",
-  profileId: "",
-  activeConversationId: "",
+  view: restoreNavigation && validViews.has(savedNavigation.view) ? savedNavigation.view : "discover",
+  profileId: restoreNavigation ? String(savedNavigation.profileId || "") : "",
+  activeConversationId: restoreNavigation ? String(savedNavigation.activeConversationId || "") : "",
   messages: {},
   user: legacyDemoEmails.has(savedUser.email)
     ? { name: "Your name", email: "", interests: "", goal: "" }
@@ -101,17 +105,17 @@ async function syncCommunityAccounts() {
   }
 }
 
-async function syncMentorRequests() {
-  if (state.user.role !== "Mentor" || !state.user.id) return;
+async function syncConnections() {
+  if (!state.user.id || !authToken) return;
   try {
-    const response = await fetch(`/api/chat-requests?mentorId=${encodeURIComponent(state.user.id)}`, { headers: apiHeaders() });
-    if (!response.ok) return;
+    const response = await fetch(`/api/chat-requests?userId=${encodeURIComponent(state.user.id)}`, { headers: apiHeaders() });
     const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || `Connection request failed (HTTP ${response.status}).`);
     const remoteRequests = (payload.requests || []).map(request => ({
       id: request.id,
       mentorId: request.mentorId,
       requesterId: request.requesterId,
-      mentorName: state.user.name,
+      mentorName: request.mentorName || (state.user.role === "Mentor" ? state.user.name : "Mentor"),
       requesterEmail: request.requesterEmail,
       requesterName: request.requesterName,
       requesterInterests: request.requesterInterests,
@@ -131,11 +135,11 @@ async function syncMentorRequests() {
     ];
     if (JSON.stringify(state.bookings) !== previousBookings) {
       persist();
-      if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
-      else render();
+      if (state.view !== "messages") render();
     }
+    if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
   } catch (error) {
-    logTestError("Chat request sync", error);
+    logTestError("Connections sync", error);
   }
 }
 async function syncConversation(requestId) {
@@ -315,6 +319,18 @@ function render() {
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.view === state.view));
   viewContainer.innerHTML = (views[state.view] || renderDiscover)();
   updateShell();
+  navigationOwnerId = state.user.id || navigationOwnerId;
+  try {
+    localStorage.setItem("mm-navigation", JSON.stringify({
+      userId: navigationOwnerId,
+      view: state.view,
+      profileId: state.profileId,
+      activeConversationId: state.activeConversationId
+    }));
+  } catch (error) {
+    console.error("Unable to save the current page", error);
+    logTestError("Page state save", error);
+  }
 }
 function openModal(title, subtitle, body) {
   modalRoot.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><div><h2 id="modal-title">${title}</h2><p>${subtitle}</p></div><button class="modal-close" data-close-modal aria-label="Close">×</button></header><div class="modal-body">${body}</div></section>`;
@@ -618,8 +634,15 @@ document.addEventListener("submit", async event => {
         if (!payload.token) throw new Error("Sign-in did not return a session token.");
         authToken = payload.token;
         localStorage.setItem("mm-token", JSON.stringify(authToken));
+        if (navigationOwnerId && navigationOwnerId !== payload.user.id) {
+          state.view = "discover";
+          state.profileId = "";
+          state.activeConversationId = "";
+        }
+        navigationOwnerId = payload.user.id;
         state.user = payload.user;
         await syncCommunityAccounts();
+        await syncConnections();
       }
     } catch (error) {
       console.error("Account authentication request failed", error);
@@ -630,7 +653,7 @@ document.addEventListener("submit", async event => {
       submitButton.disabled = false;
     }
     state.user.email = email;
-    persist(); document.getElementById("auth-root").classList.remove("active"); document.querySelector(".app-shell").style.display = ""; state.view = "discover"; render(); showToast("You're in. Welcome to the community!");
+    persist(); document.getElementById("auth-root").classList.remove("active"); document.querySelector(".app-shell").style.display = ""; render(); showToast("You're in. Welcome to the community!");
   }
 });
 document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
@@ -641,13 +664,13 @@ if (normalizeEmail(savedUser.email) && authToken) {
   document.getElementById("auth-root").classList.remove("active");
   document.querySelector(".app-shell").style.display = "";
   syncCommunityAccounts();
-  syncMentorRequests();
+  syncConnections();
 } else {
   showAuth("login");
   syncCommunityAccounts();
 }
 setInterval(() => {
   syncCommunityAccounts();
-  syncMentorRequests();
+  syncConnections();
   if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
 }, 5000);

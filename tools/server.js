@@ -574,19 +574,34 @@ async function handleRequest(request, response) {
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/chat-requests") {
-    const mentorId = url.searchParams.get("mentorId") || "";
     const authenticated = authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to view your connections." });
       return;
     }
-    if (authenticated.id !== mentorId || authenticated.role !== "Mentor") {
-      sendJson(response, 403, { error: "Only this mentor can view their connection requests." });
+    const requestedUserId = url.searchParams.get("userId");
+    if (requestedUserId && requestedUserId !== authenticated.id) {
+      sendJson(response, 403, { error: "You can only view your own connections." });
       return;
     }
-    const requests = chatRequests.filter(request => request.mentorId === mentorId).map(request => {
+    const requests = chatRequests.filter(request => {
+      const requesterId = request.requesterId || accounts.find(account => account.email === request.requesterEmail)?.id;
+      return authenticated.role === "Mentor"
+        ? request.mentorId === authenticated.id
+        : requesterId === authenticated.id;
+    }).map(request => {
       const requester = accounts.find(account => account.email === request.requesterEmail);
-      return { ...request, requesterId: request.requesterId || requester?.id || "", requesterName: requester?.name || request.requesterEmail, requesterSchool: requester?.school || "", requesterYear: requester?.year || "", requesterInterests: requester?.interests || "", requesterGoal: requester?.goal || "" };
+      const mentor = accounts.find(account => account.id === request.mentorId);
+      return {
+        ...request,
+        requesterId: request.requesterId || requester?.id || "",
+        requesterName: requester?.name || request.requesterEmail,
+        requesterSchool: requester?.school || "",
+        requesterYear: requester?.year || "",
+        requesterInterests: requester?.interests || "",
+        requesterGoal: requester?.goal || "",
+        mentorName: mentor?.name || "Mentor"
+      };
     });
     sendJson(response, 200, { requests });
     return;
