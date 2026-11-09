@@ -44,6 +44,8 @@ let authUsers = savedAuthUsers;
 let authToken = savedToken;
 let navigationOwnerId = savedNavigation?.userId || "";
 const restoreNavigation = savedNavigation && savedNavigation.userId === savedUser.id;
+const messageSyncVersions = new Map();
+const messageSyncInFlight = new Map();
 const state = {
   view: restoreNavigation && validViews.has(savedNavigation.view) ? savedNavigation.view : "discover",
   profileId: restoreNavigation ? String(savedNavigation.profileId || "") : "",
@@ -144,24 +146,43 @@ async function syncConnections() {
 }
 async function syncConversation(requestId) {
   if (!requestId || !state.user.id) return;
-  try {
-    const url = `/api/messages?requestId=${encodeURIComponent(requestId)}&userId=${encodeURIComponent(state.user.id)}`;
-    const response = await fetch(url, { headers: apiHeaders() });
-    const payload = await readJsonResponse(response);
-    if (!response.ok) throw new Error(payload.error || `Message request failed (HTTP ${response.status}).`);
-    state.messages[requestId] = payload.messages || [];
-    if (state.view === "messages" && state.activeConversationId === requestId) {
-      const list = document.getElementById("message-list");
-      if (list) {
-        list.innerHTML = state.messages[requestId].length
-          ? state.messages[requestId].map(message => `<div class="chat-message ${message.senderId === state.user.id ? "mine" : ""}"><span>${safe(message.senderName)}</span><p>${safe(message.text)}</p><small>${new Date(message.createdAt).toLocaleString()}</small></div>`).join("")
-          : `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`;
-        list.scrollTop = list.scrollHeight;
+  if (messageSyncInFlight.has(requestId)) return messageSyncInFlight.get(requestId);
+  const version = messageSyncVersions.get(requestId) || 0;
+  const syncPromise = (async () => {
+    try {
+      const url = `/api/messages?requestId=${encodeURIComponent(requestId)}&userId=${encodeURIComponent(state.user.id)}`;
+      const response = await fetch(url, { headers: apiHeaders() });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `Message request failed (HTTP ${response.status}).`);
+      if (version !== (messageSyncVersions.get(requestId) || 0)) return;
+      const merged = new Map((state.messages[requestId] || []).map(message => [message.id, message]));
+      for (const message of payload.messages || []) merged.set(message.id, message);
+      state.messages[requestId] = [...merged.values()].sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+      );
+      if (state.view === "messages" && state.activeConversationId === requestId) {
+        const list = document.getElementById("message-list");
+        if (list) {
+          list.innerHTML = state.messages[requestId].length
+            ? state.messages[requestId].map(message => `<div class="chat-message ${message.senderId === state.user.id ? "mine" : ""}"><span>${safe(message.senderName)}</span><p>${safe(message.text)}</p><small>${new Date(message.createdAt).toLocaleString()}</small></div>`).join("")
+            : `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`;
+          list.scrollTop = list.scrollHeight;
+        }
       }
+    } catch (error) {
+      console.error("Unable to load messages", error);
+      logTestError("Messages sync", error);
     }
-  } catch (error) {
-    console.error("Unable to load messages", error);
-    logTestError("Messages sync", error);
+  })();
+  messageSyncInFlight.set(requestId, syncPromise);
+  try {
+    await syncPromise;
+  } finally {
+    if (messageSyncInFlight.get(requestId) === syncPromise) messageSyncInFlight.delete(requestId);
+    if (version !== (messageSyncVersions.get(requestId) || 0) &&
+      state.view === "messages" && state.activeConversationId === requestId) {
+      syncConversation(requestId);
+    }
   }
 }
 function persist() {
@@ -549,10 +570,17 @@ document.addEventListener("submit", async event => {
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `Message send failed (HTTP ${response.status}).`);
-      state.messages[form.dataset.request] = [...(state.messages[form.dataset.request] || []), payload.message];
+      const requestId = form.dataset.request;
+      messageSyncVersions.set(requestId, (messageSyncVersions.get(requestId) || 0) + 1);
+      const messages = new Map((state.messages[requestId] || []).map(message => [message.id, message]));
+      messages.set(payload.message.id, payload.message);
+      state.messages[requestId] = [...messages.values()].sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+      );
       render();
       const list = document.getElementById("message-list");
       if (list) list.scrollTop = list.scrollHeight;
+      syncConversation(requestId);
     } catch (error) {
       console.error("Unable to send message", error);
       logTestError("Message send", error);
@@ -673,4 +701,4 @@ setInterval(() => {
   syncCommunityAccounts();
   syncConnections();
   if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
-}, 5000);
+}, 1800);

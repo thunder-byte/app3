@@ -187,12 +187,6 @@ function saveAccounts() {
 function saveChatRequests() {
   requestsWriteQueue = requestsWriteQueue.then(async () => {
     if (sql) {
-      const storedResult = await sql`SELECT id FROM mentorship_chat_requests`;
-      const rows = Array.isArray(storedResult) ? storedResult : (storedResult.rows || []);
-      const requestIds = new Set(chatRequests.map(request => request.id));
-      for (const stored of rows) {
-        if (!requestIds.has(stored.id)) await sql`DELETE FROM mentorship_chat_requests WHERE id = ${stored.id}`;
-      }
       for (const request of chatRequests) {
         await sql`
           INSERT INTO mentorship_chat_requests (id, mentor_id, requester_email, request)
@@ -210,6 +204,39 @@ function saveChatRequests() {
     await fs.rename(temporaryPath, requestsPath);
   });
   return requestsWriteQueue;
+}
+
+async function findChatRequest(id) {
+  if (!sql) return chatRequests.find(request => request.id === id);
+  const result = await sql`SELECT request FROM mentorship_chat_requests WHERE id = ${id} LIMIT 1`;
+  const rows = Array.isArray(result) ? result : (result.rows || []);
+  if (!rows.length) return undefined;
+  const request = typeof rows[0].request === "string" ? JSON.parse(rows[0].request) : rows[0].request;
+  const index = chatRequests.findIndex(item => item.id === request.id);
+  if (index >= 0) chatRequests[index] = request;
+  else chatRequests.push(request);
+  return request;
+}
+
+async function listChatRequestsForAccount(account) {
+  let requests;
+  if (sql) {
+    const result = account.role === "Mentor"
+      ? await sql`SELECT request FROM mentorship_chat_requests WHERE mentor_id = ${account.id}`
+      : await sql`SELECT request FROM mentorship_chat_requests WHERE requester_email = ${account.email}`;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    requests = rows.map(row => typeof row.request === "string" ? JSON.parse(row.request) : row.request);
+  } else {
+    requests = chatRequests.filter(request => account.role === "Mentor"
+      ? request.mentorId === account.id
+      : (request.requesterId || accounts.find(item => item.email === request.requesterEmail)?.id) === account.id);
+  }
+  for (const request of requests) {
+    const index = chatRequests.findIndex(item => item.id === request.id);
+    if (index >= 0) chatRequests[index] = request;
+    else chatRequests.push(request);
+  }
+  return requests;
 }
 
 function saveMessages() {
@@ -324,16 +351,28 @@ function safeEqualHex(leftHex, rightHex) {
   return crypto.timingSafeEqual(Buffer.from(leftHex, "hex"), Buffer.from(rightHex, "hex"));
 }
 
-function authenticatedAccount(request) {
+async function authenticatedAccount(request) {
   const authorization = String(request.headers.authorization || "");
   const tokenMatch = authorization.match(/^Bearer ([A-Za-z0-9_-]+)$/);
   if (!tokenMatch) return null;
   const tokenHash = crypto.createHash("sha256").update(tokenMatch[1]).digest("hex");
-  return accounts.find(account =>
-    account.status === "Active" &&
-    Number(account.sessionExpiresAt) > Date.now() &&
-    safeEqualHex(String(account.sessionTokenHash || ""), tokenHash)
-  ) || null;
+  let account;
+  if (sql) {
+    const result = await sql`
+      SELECT account FROM mentorship_accounts
+      WHERE account->>'sessionTokenHash' = ${tokenHash}
+      LIMIT 1
+    `;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    if (rows.length) account = typeof rows[0].account === "string" ? JSON.parse(rows[0].account) : rows[0].account;
+  } else {
+    account = accounts.find(item => safeEqualHex(String(item.sessionTokenHash || ""), tokenHash));
+  }
+  if (!account || account.status !== "Active" || Number(account.sessionExpiresAt) <= Date.now()) return null;
+  const index = accounts.findIndex(item => item.id === account.id);
+  if (index >= 0) accounts[index] = account;
+  else accounts.push(account);
+  return account;
 }
 
 function escapeHtml(value) {
@@ -506,7 +545,7 @@ async function serveStatic(url, response) {
 async function handleRequest(request, response) {
   const url = new URL(request.url, appOrigin);
   if (request.method === "GET" && url.pathname === "/api/accounts") {
-    if (!authenticatedAccount(request)) {
+    if (!await authenticatedAccount(request)) {
       sendJson(response, 401, { error: "Please sign in to browse community profiles." });
       return;
     }
@@ -518,7 +557,7 @@ async function handleRequest(request, response) {
   }
   if (request.method === "POST" && url.pathname === "/api/account/profile") {
     const body = await readJson(request);
-    const authenticated = authenticatedAccount(request);
+    const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to update your profile." });
       return;
@@ -544,7 +583,7 @@ async function handleRequest(request, response) {
     const body = await readJson(request);
     const mentorId = typeof body.mentorId === "string" ? body.mentorId.trim() : "";
     const requesterEmail = typeof body.requesterEmail === "string" ? body.requesterEmail.trim().toLowerCase() : "";
-    const authenticated = authenticatedAccount(request);
+    const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to start a connection." });
       return;
@@ -568,13 +607,22 @@ async function handleRequest(request, response) {
       status: "Pending",
       createdAt: new Date().toISOString()
     };
-    chatRequests.push(chatRequest);
-    await saveChatRequests();
+    if (sql) {
+      await sql`
+        INSERT INTO mentorship_chat_requests (id, mentor_id, requester_email, request)
+        VALUES (${chatRequest.id}, ${chatRequest.mentorId}, ${chatRequest.requesterEmail}, ${JSON.stringify(chatRequest)})
+        ON CONFLICT (id) DO UPDATE SET request = EXCLUDED.request
+      `;
+    }
+    const existingIndex = chatRequests.findIndex(item => item.id === chatRequest.id);
+    if (existingIndex >= 0) chatRequests[existingIndex] = chatRequest;
+    else chatRequests.push(chatRequest);
+    if (!sql) await saveChatRequests();
     sendJson(response, 201, { request: chatRequest });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/chat-requests") {
-    const authenticated = authenticatedAccount(request);
+    const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to view your connections." });
       return;
@@ -584,12 +632,8 @@ async function handleRequest(request, response) {
       sendJson(response, 403, { error: "You can only view your own connections." });
       return;
     }
-    const requests = chatRequests.filter(request => {
-      const requesterId = request.requesterId || accounts.find(account => account.email === request.requesterEmail)?.id;
-      return authenticated.role === "Mentor"
-        ? request.mentorId === authenticated.id
-        : requesterId === authenticated.id;
-    }).map(request => {
+    const accountRequests = await listChatRequestsForAccount(authenticated);
+    const requests = accountRequests.map(request => {
       const requester = accounts.find(account => account.email === request.requesterEmail);
       const mentor = accounts.find(account => account.id === request.mentorId);
       return {
@@ -608,39 +652,54 @@ async function handleRequest(request, response) {
   }
   if (request.method === "PATCH" && url.pathname === "/api/chat-requests") {
     const body = await readJson(request);
-    const connection = chatRequests.find(item => item.id === body.id);
-    const authenticated = authenticatedAccount(request);
+    const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to cancel this connection." });
       return;
     }
+    const connection = await findChatRequest(body.id);
     const userId = authenticated.id;
     const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
-    if (!connection || (userId !== connection.mentorId && userId !== requesterId)) {
+    if (!connection || connection.status === "Cancelled" || (userId !== connection.mentorId && userId !== requesterId)) {
       sendJson(response, 403, { error: "Only members in this connection can cancel it." });
       return;
     }
     connection.status = "Cancelled";
-    await saveChatRequests();
+    if (sql) {
+      await sql`UPDATE mentorship_chat_requests SET request = ${JSON.stringify(connection)}::jsonb WHERE id = ${connection.id}`;
+    } else {
+      await saveChatRequests();
+    }
     sendJson(response, 200, { request: connection });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/messages") {
     const requestId = url.searchParams.get("requestId") || "";
-    const authenticated = authenticatedAccount(request);
+    const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to view messages." });
       return;
     }
     const userId = authenticated.id;
-    const connection = chatRequests.find(item => item.id === requestId && item.status !== "Cancelled");
+    const connection = await findChatRequest(requestId);
     const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
     if (!connection || (userId !== connection.mentorId && userId !== requesterId)) {
       sendJson(response, 403, { error: "Messages are available only to members in this connection." });
       return;
     }
-    const conversation = messages
-      .filter(message => message.requestId === requestId)
+    let conversation;
+    if (sql) {
+      const result = await sql`
+        SELECT message FROM mentorship_messages
+        WHERE request_id = ${requestId}
+        ORDER BY message->>'createdAt', id
+      `;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      conversation = rows.map(row => typeof row.message === "string" ? JSON.parse(row.message) : row.message);
+    } else {
+      conversation = messages.filter(message => message.requestId === requestId);
+    }
+    conversation = conversation
       .map(({ senderEmail, ...message }) => message)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     sendJson(response, 200, { messages: conversation });
@@ -649,17 +708,17 @@ async function handleRequest(request, response) {
   if (request.method === "POST" && url.pathname === "/api/messages") {
     const body = await readJson(request);
     const requestId = typeof body.requestId === "string" ? body.requestId : "";
-    const authenticated = authenticatedAccount(request);
+    const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to send messages." });
       return;
     }
     const senderId = authenticated.id;
     const text = typeof body.text === "string" ? body.text.trim() : "";
-    const connection = chatRequests.find(item => item.id === requestId && item.status !== "Cancelled");
+    const connection = await findChatRequest(requestId);
     const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
-    const sender = accounts.find(account => account.id === senderId && account.status === "Active");
-    if (!connection || !sender || (senderId !== connection.mentorId && senderId !== requesterId) || !text || text.length > 2000) {
+    const sender = authenticated.id === senderId ? authenticated : null;
+    if (!connection || connection.status === "Cancelled" || !sender || (senderId !== connection.mentorId && senderId !== requesterId) || !text || text.length > 2000) {
       sendJson(response, 400, { error: "A valid connection and message are required." });
       return;
     }
@@ -671,8 +730,14 @@ async function handleRequest(request, response) {
       text,
       createdAt: new Date().toISOString()
     };
+    if (sql) {
+      await sql`
+        INSERT INTO mentorship_messages (id, request_id, message)
+        VALUES (${message.id}, ${message.requestId}, ${JSON.stringify(message)})
+      `;
+    }
     messages.push(message);
-    await saveMessages();
+    if (!sql) await saveMessages();
     sendJson(response, 201, { message });
     return;
   }
@@ -687,7 +752,7 @@ async function handleRequest(request, response) {
   if (request.method === "POST" && url.pathname === "/api/reviews") {
     const body = await readJson(request);
     const mentorId = typeof body.mentorId === "string" ? body.mentorId : "";
-    const authenticated = authenticatedAccount(request);
+    const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in again to share a review." });
       return;
