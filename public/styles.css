@@ -78,11 +78,8 @@ h1, h2, h3, p { margin-top: 0; }h1,h2,h3 { font-family: var(--serif); letter-spa
 .toast { position: fixed; bottom: 22px; left: 50%; transform: translate(-50%,12px); padding: 11px 16px; color: white; background: #303a2d; font-size: 11px; border-radius: 7px; opacity: 0; pointer-events: none; transition: .2s; z-index: 50; box-shadow: 0 8px 24px #20292030; }.toast.show { opacity: 1; transform: translate(-50%,0); }
 
 /* Temporary testing panel; remove TEST_ERROR_LOG and this block for the final build. */
-.debug-log-panel { position: fixed; left: 12px; bottom: 12px; width: min(390px, calc(100vw - 24px)); max-height: 180px; z-index: 1000; overflow: hidden; background: rgba(28, 31, 27, .96); border: 1px solid #5c6457; border-radius: 8px; color: #fff; font: 11px/1.4 monospace; box-shadow: 0 8px 28px rgba(0,0,0,.25); }
-.debug-log-header { display: flex; justify-content: space-between; align-items: center; padding: 7px 9px; border-bottom: 1px solid #4d5349; }
-.debug-log-header button { border: 0; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
-.debug-log-entries { max-height: 145px; overflow: auto; padding: 6px 9px 8px; }
-.debug-log-entries div { padding: 2px 0; overflow-wrap: anywhere; color: #ffd2d2; }
+.avatar img,.mentor-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.profile-picture-preview { overflow: hidden; }
 .auth-screen { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; background: #fff; }.auth-art { background: #edf2e8; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; padding: 40px; }.auth-art-content { position: relative; z-index: 2; max-width: 430px; }.auth-art h1 { font-size: 39px; line-height: 1.2; margin: 19px 0 12px; }.auth-art p { color: #687160; line-height: 1.7; font-size: 13px; max-width: 330px; }.auth-shape { position: absolute; width: 330px; height: 330px; right: -95px; bottom: -100px; background: #dbe7cf; border-radius: 50%; box-shadow: 0 0 0 36px #e6eddf,0 0 0 72px #edf2e8; }.auth-form-wrap { display: grid; place-items: center; padding: 30px; }.auth-form { width: min(100%, 350px); }.auth-form h2 { font-size: 26px; margin: 0 0 7px; }.auth-form > p { color: #858980; font-size: 12px; margin: 0 0 24px; }.auth-form .field { margin-bottom: 13px; }.auth-form .button-primary { width: 100%; padding: 12px; margin-top: 7px; }.auth-switch { margin-top: 17px; text-align: center; color: #888c84; font-size: 11px; }.auth-switch button { border: 0; background: none; color: var(--green-dark); font-weight: 700; cursor: pointer; }.auth-logo { position: absolute; top: 25px; left: 32px; z-index: 2; }
 #auth-root { display: none; }#auth-root.active { display: block; }
 .auth-resend[hidden] { display: none; }

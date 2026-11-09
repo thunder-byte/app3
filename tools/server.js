@@ -32,7 +32,7 @@ const messagesPath = path.join(dataDirectory, "messages.json");
 const reviewsPath = path.join(dataDirectory, "reviews.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
-const maxRequestBytes = 16 * 1024;
+const maxRequestBytes = 256 * 1024;
 let accounts = [];
 let chatRequests = [];
 let messages = [];
@@ -337,7 +337,8 @@ function publicAccount(account) {
     year: account.year,
     interests: account.interests,
     goal: account.goal,
-    status: account.status
+    status: account.status,
+    profileImage: account.profileImage || ""
   };
 }
 
@@ -575,6 +576,12 @@ async function handleRequest(request, response) {
     account.interests = typeof body.interests === "string" ? body.interests.trim().slice(0, 500) : "";
     account.goal = typeof body.goal === "string" ? body.goal.trim().slice(0, 1000) : "";
     account.field = account.interests.split(",")[0].trim();
+    const profileImage = typeof body.profileImage === "string" ? body.profileImage : "";
+    if (profileImage && (!/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(profileImage) || profileImage.length > 200 * 1024)) {
+      sendJson(response, 400, { error: "Choose a JPG, PNG, or WebP profile picture smaller than 150 KB." });
+      return;
+    }
+    account.profileImage = profileImage;
     await saveAccounts();
     sendJson(response, 200, { user: publicAccount(account) });
     return;

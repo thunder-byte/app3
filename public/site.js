@@ -1,29 +1,7 @@
 const legacyDemoIds = new Set(["maya", "jordan", "amara", "diego", "priya", "alex", "sam", "nina", "student"]);
 const legacyDemoEmails = new Set(["maya.chen@example.com", "jordan.lee@example.com", "amara.okafor@example.com", "diego.r@example.com", "taylor.kim@example.com", "jamie.davis@example.com", "test@gmail.com"]);
-const TEST_ERROR_LOG = true; // Set to false for the final build.
-
-let debugLogPanel;
-let debugLogEntries;
 function logTestError(source, error) {
-  if (!TEST_ERROR_LOG) return;
-  const detail = error && error.message ? error.message : String(error || "Unknown error");
-  const timestamp = new Date().toLocaleTimeString();
-  const entry = document.createElement("div");
-  entry.textContent = `[${timestamp}] ${source}: ${detail}`;
-  debugLogEntries.append(entry);
-  while (debugLogEntries.children.length > 20) debugLogEntries.firstElementChild.remove();
-  debugLogEntries.scrollTop = debugLogEntries.scrollHeight;
-}
-
-if (TEST_ERROR_LOG) {
-  debugLogPanel = document.createElement("div");
-  debugLogPanel.className = "debug-log-panel";
-  debugLogPanel.innerHTML = '<div class="debug-log-header"><strong>Test error log</strong><button type="button">Clear</button></div><div class="debug-log-entries"></div>';
-  document.body.append(debugLogPanel);
-  debugLogEntries = debugLogPanel.querySelector(".debug-log-entries");
-  debugLogPanel.querySelector("button").addEventListener("click", () => debugLogEntries.replaceChildren());
-  window.addEventListener("error", event => logTestError("Window", event.error || event.message));
-  window.addEventListener("unhandledrejection", event => logTestError("Promise", event.reason));
+  console.error(`${source}:`, error);
 }
 
 const readStore = (key, fallback) => {
@@ -37,7 +15,7 @@ const savedReports = readStore("mm-reports", []);
 const savedUser = readStore("mm-user", { name: "Your name", email: "", interests: "", goal: "" });
 const savedToken = readStore("mm-token", "");
 const savedNavigation = readStore("mm-navigation", null);
-const validViews = new Set(["discover", "sessions", "profile", "member", "admin", "messages"]);
+const validViews = new Set(["discover", "sessions", "profile", "member", "messages"]);
 const savedAuthUsers = readStore("mm-auth-users", []);
 const savedUsersHaveClientCredentials = savedUsers.some(user => user.passwordSalt || user.passwordHash);
 let authUsers = savedAuthUsers;
@@ -62,6 +40,9 @@ const state = {
   reports: savedReports.filter(report => report.title !== "Inappropriate message reported"),
   filter: "All fields", query: ""
 };
+let selectedProfileImage = state.user.profileImage || "";
+let profileImageTask = Promise.resolve();
+let profileImageSelectionVersion = 0;
 const viewContainer = document.getElementById("view-container");
 const modalRoot = document.getElementById("modal-root");
 let toastTimeout;
@@ -197,9 +178,57 @@ function persist() {
 }
 if (state.user !== savedUser || state.bookings.length !== savedBookings.length || Object.keys(state.reviews).length !== Object.keys(savedReviews).length || state.users.length !== savedUsers.length || state.reports.length !== savedReports.length || savedUsersHaveClientCredentials) persist();
 function initials(name) { return String(name || "YN").split(/\s+/).map(part => part[0]).slice(0, 2).join("").toUpperCase(); }
+function avatarContent(name, image) {
+  return image ? `<img src="${safe(image)}" alt="" />` : initials(name);
+}
+function resizeProfileImage(file) {
+  if (!file || !["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    return Promise.reject(new Error("Choose a JPG, PNG, or WebP image."));
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    return Promise.reject(new Error("Choose an image smaller than 8 MB."));
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("The selected image could not be read."));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error("The selected image could not be opened."));
+      image.onload = () => {
+        if (image.naturalWidth * image.naturalHeight > 40000000) {
+          reject(new Error("Choose an image with fewer than 40 megapixels."));
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        const size = 256;
+        canvas.width = size;
+        canvas.height = size;
+        const crop = Math.min(image.naturalWidth, image.naturalHeight);
+        const x = (image.naturalWidth - crop) / 2;
+        const y = (image.naturalHeight - crop) / 2;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          reject(new Error("Your browser could not process the selected image."));
+          return;
+        }
+        context.drawImage(image, x, y, crop, crop, 0, 0, size, size);
+        for (const quality of [0.82, 0.72, 0.62, 0.52]) {
+          const resized = canvas.toDataURL("image/jpeg", quality);
+          if (resized.length <= 190 * 1024) {
+            resolve(resized);
+            return;
+          }
+        }
+        reject(new Error("That image could not be resized small enough. Try another image."));
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 function updateShell() {
   document.getElementById("topbar-name").textContent = state.user.name;
-  document.querySelectorAll(".avatar-you").forEach(el => el.textContent = initials(state.user.name));
+  document.querySelector(".topbar-user .avatar").innerHTML = avatarContent(state.user.name, state.user.profileImage);
   document.getElementById("session-count").textContent = state.bookings.filter(item => item.status !== "Completed" && item.status !== "Cancelled").length;
   const accountRole = document.getElementById("account-role");
   if (accountRole) accountRole.textContent = `${state.user.role || "Student"} account`;
@@ -248,7 +277,7 @@ function mentorCard(mentor) {
   const isMentor = mentor.role === "Mentor";
   const connected = Boolean(connectionFor(mentor.id));
   return `<article class="mentor-card">
-    <div class="card-top"><div class="mentor-avatar ${isMentor ? "avatar-blue" : "avatar-you"}">${initials(mentor.name)}</div></div>
+    <div class="card-top"><div class="mentor-avatar ${isMentor ? "avatar-blue" : "avatar-you"}">${avatarContent(mentor.name, mentor.profileImage)}</div></div>
     <h3>${safe(mentor.name)}</h3><p class="mentor-role"><strong>${safe(mentor.role)}</strong>${mentor.field ? ` · ${safe(mentor.field)}` : ""}</p>
     <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span></div>
     <p class="mentor-bio">${safe(mentor.goal || mentor.bio || mentor.interests || "This member has shared their profile and preferences.")}</p><div class="tag-list"><span class="tag">${safe(mentor.field || (mentor.interests || "Community member").split(",")[0])}</span></div>
@@ -288,9 +317,10 @@ function renderSessions() {
     }).join("")}</div>` : `<div class="empty-state"><strong>Your calendar has room for a great conversation.</strong>Find a mentor and book your first session.<br><button class="button-primary" style="margin-top:15px" data-view="discover">Browse mentors</button></div>`}</div></section></div>`;
 }
 function renderProfile() {
+  const profileImage = selectedProfileImage || state.user.profileImage || "";
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A little about you</div><h1>My profile</h1><p>Help mentors understand what you care about and where you're headed.</p></div></div>
-    <div class="profile-layout"><section class="profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar avatar-you">${initials(state.user.name)}</span><div><h2>${safe(state.user.name)}</h2><p>${safe(state.user.role || "Student")} · Making room for what's next</p></div></div>
-      <form id="profile-form"><div class="field-grid"><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#888d83;font-size:9px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interests">Academic & career interests</label><input id="profile-interests" name="interests" value="${safe(state.user.interests)}" placeholder="Design, technology, climate science..."></div><div class="field full"><label for="profile-goal">What are you hoping to explore?</label><textarea id="profile-goal" name="goal" placeholder="Tell mentors a bit about your goals...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
+    <div class="profile-layout"><section class="profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar avatar-you profile-picture-preview">${avatarContent(state.user.name, profileImage)}</span><div><h2>${safe(state.user.name)}</h2><p>${safe(state.user.role || "Student")} · Making room for what's next</p></div></div>
+      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#888d83;font-size:9px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interests">Academic & career interests</label><input id="profile-interests" name="interests" value="${safe(state.user.interests)}" placeholder="Design, technology, climate science..."></div><div class="field full"><label for="profile-goal">What are you hoping to explore?</label><textarea id="profile-goal" name="goal" placeholder="Tell mentors a bit about your goals...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
     </section><aside class="profile-side"><section class="panel"><div class="panel-heading"><h2>Your interests</h2><button class="button-quiet" data-profile-edit>Edit</button></div><div class="panel-body">${(state.user.interests || "").split(",").filter(Boolean).map(item => `<div class="interest-item"><span>${safe(item.trim())}</span><span>↗</span></div>`).join("") || `<span style="font-size:11px;color:#96998f">Add interests to personalize your matches.</span>`}</div></section><section class="panel profile-reviews"><div class="panel-heading"><h2>Reviews about you</h2></div><div class="panel-body">${reviewListMarkup(state.user.id)}</div></section><div class="profile-tip"><strong>Good profiles get great conversations.</strong>Sharing what you're curious about helps mentors show up with ideas made for you.</div></aside></div></div>`;
 }
 function reviewListMarkup(memberId) {
@@ -305,19 +335,12 @@ function renderMemberProfile() {
   const connection = connectionFor(member.id);
   const interests = (member.interests || "").split(",").map(value => value.trim()).filter(Boolean);
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">Community profile</div><h1>${safe(member.name)}</h1><p>${safe(member.role)}${member.field ? ` · ${safe(member.field)}` : ""}</p></div><button class="button-quiet" data-view="discover">← Back to community</button></div>
-    <div class="public-profile-layout"><section class="profile-card public-profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar ${member.role === "Mentor" ? "avatar-blue" : "avatar-you"}">${initials(member.name)}</span><div><h2>${safe(member.name)}</h2><p>${safe(member.role)} · Community member</p></div></div><div class="public-preferences">
+    <div class="public-profile-layout"><section class="profile-card public-profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar ${member.role === "Mentor" ? "avatar-blue" : "avatar-you"}">${avatarContent(member.name, member.profileImage)}</span><div><h2>${safe(member.name)}</h2><p>${safe(member.role)} · Community member</p></div></div><div class="public-preferences">
       <div><strong>School</strong><span>${safe(member.school || "Not shared")}</span></div><div><strong>Year of study</strong><span>${safe(member.year || "Not shared")}</span></div>
       <div class="preference-wide"><strong>Interests</strong><span>${interests.length ? interests.map(safe).join(", ") : "Not shared"}</span></div>
       <div class="preference-wide"><strong>Goals</strong><span>${safe(member.goal || "Not shared")}</span></div>
     </div><div class="profile-actions">${connection ? `<button class="button-primary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>` : member.role === "Mentor" ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Reviews</h2><p>Feedback shared by people who connected with ${safe(member.name.split(" ")[0])}.</p></div></div><div class="panel-body">${reviewListMarkup(member.id)}</div></section></div></div>`;
-}
-function renderAdmin() {
-  return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">Keeping this a good place to grow</div><h1>Admin panel</h1><p>Manage the community and review reports that need a human touch.</p></div><span class="status-badge">Admin view</span></div>
-    <div class="stats-row"><div class="stat-card"><span class="stat-label">Community members</span><div class="stat-value">${state.users.length}</div><span class="stat-foot">Students and mentors</span></div><div class="stat-card"><span class="stat-label">Mentor profiles</span><div class="stat-value">${state.users.filter(user => user.role === "Mentor").length}</div><span class="stat-foot">Verified professionals</span></div><div class="stat-card"><span class="stat-label">Needs attention</span><div class="stat-value">${state.reports.filter(report => report.status !== "Resolved").length}</div><span class="stat-foot">Community reports</span></div></div>
-    <section class="panel" style="margin-bottom:17px"><div class="panel-heading"><div><h2>Community reports</h2><p>Review flagged activity and keep the community welcoming.</p></div></div><div class="panel-body">${state.reports.length ? `<div class="session-list">${state.reports.map(report => `<article class="session-card"><div class="session-date" style="font-size:17px">⚑</div><div class="session-info"><strong>${safe(report.title)}</strong><p>${safe(report.detail)} · ${safe(report.type)}</p></div><span class="status-badge ${report.status === "Resolved" ? "completed" : "pending"}">${report.status}</span>${report.status !== "Resolved" ? `<button class="button-secondary" data-resolve="${report.id}">Mark resolved</button>` : ""}</article>`).join("")}</div>` : `<div class="empty-state"><strong>All clear for now.</strong>No community reports need review.</div>`}</div></section>
-    <section class="panel"><div class="panel-heading"><div><h2>Community members</h2><p>Review account status and industry interests.</p></div><button class="button-secondary" data-add-user>+ Add member</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Member</th><th>Role</th><th>Field</th><th>Status</th><th>Actions</th></tr></thead><tbody>${state.users.length ? state.users.map(user => `<tr><td><div class="table-person"><span class="avatar ${user.role === "Mentor" ? "avatar-blue" : "avatar-you"}">${initials(user.name)}</span><span><strong>${safe(user.name)}</strong><small>${safe(user.email)}</small></span></div></td><td>${safe(user.role)}</td><td>${safe(user.field)}</td><td><span class="status-badge ${user.status === "Flagged" ? "pending" : user.status === "Suspended" ? "completed" : ""}">${safe(user.status)}</span></td><td><div style="display:flex;gap:6px"><button class="${user.status === "Suspended" ? "button-secondary" : "button-danger"}" data-user-action="${safe(user.id)}">${user.status === "Suspended" ? "Restore" : "Suspend"}</button><button class="button-quiet" data-delete-member="${safe(user.id)}" aria-label="Delete ${safe(user.name)} account">Delete</button></div></td></tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#96998f;padding:25px">No community members yet.</td></tr>`}</tbody></table></div></section>
-    <p style="font-size:10px;color:#96998f;margin-top:12px">Admin records are stored in this browser only. Connect an authenticated backend before production use.</p></div>`;
 }
 function renderMessages() {
   const conversations = state.bookings.filter(booking => booking.status !== "Cancelled");
@@ -330,12 +353,13 @@ function renderMessages() {
     : `<section class="panel"><div class="panel-body"><div class="empty-state"><strong>Select a connection to message.</strong>Start a mentor session request to connect with another member.</div></div></section>`;
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A conversation can start anywhere</div><h1>Messages</h1><p>Message students and mentors after you connect through a session request.</p></div></div><div class="messages-layout"><section class="panel conversation-panel"><div class="panel-heading"><h2>Connections</h2></div><div class="conversation-list">${conversations.length ? conversations.map(booking => {
     const name = state.user.role === "Mentor" ? booking.requesterName || "Student" : booking.mentorName || "Mentor";
-    return `<button class="conversation-choice ${booking.id === state.activeConversationId ? "selected" : ""}" data-message="${safe(booking.id)}"><span class="avatar ${state.user.role === "Mentor" ? "avatar-you" : "avatar-blue"}">${initials(name)}</span><span><strong>${safe(name)}</strong><small>${safe(booking.topic)}</small></span></button>`;
+    const person = state.users.find(user => user.id === (state.user.role === "Mentor" ? booking.requesterId : booking.mentorId));
+    return `<button class="conversation-choice ${booking.id === state.activeConversationId ? "selected" : ""}" data-message="${safe(booking.id)}"><span class="avatar ${state.user.role === "Mentor" ? "avatar-you" : "avatar-blue"}">${avatarContent(name, person?.profileImage)}</span><span><strong>${safe(name)}</strong><small>${safe(booking.topic)}</small></span></button>`;
   }).join("") : `<div class="muted-copy conversation-empty">No connections yet. Request a mentor chat to start messaging.</div>`}</div></section>${convoPanel}</div></div>`;
 }
 function render() {
-  const views = { discover: renderDiscover, sessions: renderSessions, profile: renderProfile, member: renderMemberProfile, admin: renderAdmin, messages: renderMessages };
-  const labels = { discover: "Discover people", sessions: "My sessions", profile: "My profile", member: "Community profile", admin: "Admin panel", messages: "Messages" };
+  const views = { discover: renderDiscover, sessions: renderSessions, profile: renderProfile, member: renderMemberProfile, messages: renderMessages };
+  const labels = { discover: "Discover people", sessions: "My sessions", profile: "My profile", member: "Community profile", messages: "Messages" };
   document.getElementById("crumb-label").textContent = labels[state.view] || labels.discover;
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.view === state.view));
   viewContainer.innerHTML = (views[state.view] || renderDiscover)();
@@ -442,23 +466,10 @@ document.addEventListener("click", async event => {
     form.querySelector('[name="rating"]').value = rating;
     form.querySelectorAll("[data-rating]").forEach(button => button.classList.toggle("selected", Number(button.dataset.rating) <= rating)); return;
   }
-  if (target.hasAttribute("data-resolve")) {
-    const report = state.reports.find(item => String(item.id) === target.dataset.resolve);
-    if (report) report.status = "Resolved";
-    persist(); render(); showToast("Report marked as resolved."); return;
-  }
-  if (target.hasAttribute("data-user-action")) {
-    const user = state.users.find(item => item.id === target.dataset.userAction);
-    if (user) user.status = user.status === "Suspended" ? "Active" : "Suspended";
-    persist(); render(); showToast(user?.status === "Suspended" ? "Member suspended." : "Member account restored."); return;
-  }
-  if (target.hasAttribute("data-add-user")) {
-    openModal("Add a community member", "Create a member record for the community directory.", `<form class="modal-form" id="add-user-form"><div class="field"><label for="new-name">Full name</label><input id="new-name" name="name" required></div><div class="field"><label for="new-email">Email</label><input id="new-email" name="email" type="email" required></div><div class="field-grid"><div class="field"><label for="new-role">Role</label><select id="new-role" name="role"><option>Student</option><option>Mentor</option></select></div><div class="field"><label for="new-field">Field</label><input id="new-field" name="field" required></div></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary">Add member</button></div></form>`); return;
-  }
   if (target.hasAttribute("data-scroll-mentors")) { document.getElementById("mentor-section").scrollIntoView({ behavior: "smooth" }); return; }
   if (target.hasAttribute("data-profile-edit")) { document.getElementById("profile-name").focus(); return; }
   if (target.id === "account-button") {
-    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${initials(state.user.name)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
+    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
   }
   if (target.hasAttribute("data-logout")) {
     authToken = "";
@@ -499,6 +510,19 @@ document.addEventListener("input", event => {
 });
 document.addEventListener("change", event => {
   if (event.target.id === "field-filter") { state.filter = event.target.value; render(); }
+  if (event.target.id === "profile-picture" && event.target.files?.[0]) {
+    const selectionVersion = ++profileImageSelectionVersion;
+    profileImageTask = resizeProfileImage(event.target.files[0]).then(image => {
+      if (selectionVersion !== profileImageSelectionVersion) return;
+      selectedProfileImage = image;
+      document.querySelectorAll(".profile-picture-preview").forEach(el => { el.innerHTML = avatarContent(state.user.name, image); });
+    }).catch(error => {
+      if (selectionVersion !== profileImageSelectionVersion) return;
+      console.error("Unable to process profile picture", error);
+      showToast(error.message || "The profile picture could not be processed.");
+      event.target.value = "";
+    });
+  }
 });
 document.addEventListener("submit", async event => {
   event.preventDefault();
@@ -591,11 +615,12 @@ document.addEventListener("submit", async event => {
     return;
   }
   if (form.id === "profile-form") {
+    await profileImageTask;
     const data = new FormData(form);
     const email = normalizeEmail(data.get("email"));
     const ownMember = state.users.find(user => user.id === state.user.id || normalizeEmail(user.email) === normalizeEmail(state.user.email));
     if (emailAlreadyInUse(email, ownMember?.id)) { showToast("That email is already used by another account."); return; }
-    const updatedProfile = { name: data.get("name").trim(), email, role: data.get("role"), school: data.get("school").trim(), year: data.get("year"), interests: data.get("interests").trim(), goal: data.get("goal").trim(), field: data.get("interests").trim().split(",")[0].trim() };
+    const updatedProfile = { name: data.get("name").trim(), email, role: data.get("role"), school: data.get("school").trim(), year: data.get("year"), interests: data.get("interests").trim(), goal: data.get("goal").trim(), field: data.get("interests").trim().split(",")[0].trim(), profileImage: selectedProfileImage || state.user.profileImage || "" };
     try {
       const response = await fetch("/api/account/profile", {
         method: "POST",
@@ -611,19 +636,13 @@ document.addEventListener("submit", async event => {
       return;
     }
     state.user = { ...state.user, ...updatedProfile };
+    selectedProfileImage = state.user.profileImage || "";
     if (ownMember) {
-      Object.assign(ownMember, { name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: state.user.field });
+      Object.assign(ownMember, { name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: state.user.field, profileImage: state.user.profileImage });
     } else {
-      state.users.push({ id: state.user.id, name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: (state.user.interests || "").split(",")[0].trim(), status: "Active" });
+      state.users.push({ id: state.user.id, name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: (state.user.interests || "").split(",")[0].trim(), profileImage: state.user.profileImage, status: "Active" });
     }
     persist(); render(); showToast("Your profile is looking good."); return;
-  }
-  if (form.id === "add-user-form") {
-    const data = new FormData(form);
-    const email = normalizeEmail(data.get("email"));
-    if (emailAlreadyInUse(email)) { showToast("That email is already used by another account."); return; }
-    state.users.push({ id: `member-${Date.now()}`, name: data.get("name").trim(), email, role: data.get("role"), field: data.get("field").trim(), status: "Active" });
-    persist(); closeModal(); render(); showToast("Community member added."); return;
   }
   if (form.id === "auth-form") {
     const data = new FormData(form);
@@ -669,6 +688,7 @@ document.addEventListener("submit", async event => {
         }
         navigationOwnerId = payload.user.id;
         state.user = payload.user;
+        selectedProfileImage = state.user.profileImage || "";
         await syncCommunityAccounts();
         await syncConnections();
       }
