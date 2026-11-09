@@ -285,7 +285,7 @@ function mentorCard(mentor) {
     <h3>${safe(mentor.name)}</h3><p class="mentor-role"><strong>${safe(mentor.role)}</strong>${mentor.field ? ` · ${safe(mentor.field)}` : ""}</p>
     <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span></div>
     <p class="mentor-bio">${safe(mentor.goal || mentor.bio || mentor.interests || "This member has shared their profile and preferences.")}</p><div class="tag-list"><span class="tag">${safe(mentor.field || (mentor.interests || "Community member").split(",")[0])}</span></div>
-    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>` : isMentor ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request a chat <span>↗</span></button>` : ""}</div>
+    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>${isMentor ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request another chat <span>↗</span></button>` : ""}` : isMentor ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request a chat <span>↗</span></button>` : ""}</div>
   </article>`;
 }
 function renderDiscover() {
@@ -343,7 +343,7 @@ function renderMemberProfile() {
       <div><strong>School</strong><span>${safe(member.school || "Not shared")}</span></div><div><strong>Year of study</strong><span>${safe(member.year || "Not shared")}</span></div>
       <div class="preference-wide"><strong>Interests</strong><span>${interests.length ? interests.map(safe).join(", ") : "Not shared"}</span></div>
       <div class="preference-wide"><strong>Goals</strong><span>${safe(member.goal || "Not shared")}</span></div>
-    </div><div class="profile-actions">${connection ? `<button class="button-primary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>` : member.role === "Mentor" ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
+    </div><div class="profile-actions">${connection ? `<button class="button-secondary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>${member.role === "Mentor" ? `<button class="button-primary" data-book="${safe(member.id)}">Request another chat</button>` : ""}` : member.role === "Mentor" ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Reviews</h2><p>Feedback shared by people who connected with ${safe(member.name.split(" ")[0])}.</p></div></div><div class="panel-body">${reviewListMarkup(member.id)}</div></section></div></div>`;
 }
 function renderMessages() {
