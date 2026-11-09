@@ -457,9 +457,26 @@ document.addEventListener("click", async event => {
     return;
   }
   if (target.hasAttribute("data-complete")) {
-    const booking = state.bookings.find(item => item.id === target.dataset.complete);
-    if (booking) booking.status = "Completed";
-    persist(); render(); showToast("Session marked complete. Leave a review when you're ready."); return;
+    target.disabled = true;
+    try {
+      const response = await fetch("/api/chat-requests", {
+        method: "PATCH",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ id: target.dataset.complete, userId: state.user.id, action: "complete" })
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `Completion update failed (HTTP ${response.status}).`);
+      const booking = state.bookings.find(item => item.id === target.dataset.complete);
+      if (booking) booking.status = payload.request.status;
+      persist();
+      render();
+      showToast("Session marked complete for both participants.");
+    } catch (error) {
+      console.error("Unable to mark session complete", error);
+      showToast(error.message || "The session could not be marked complete.");
+      target.disabled = false;
+    }
+    return;
   }
   if (target.hasAttribute("data-rating")) {
     const form = target.closest("form"); const rating = Number(target.dataset.rating);

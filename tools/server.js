@@ -661,17 +661,21 @@ async function handleRequest(request, response) {
     const body = await readJson(request);
     const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
-      sendJson(response, 401, { error: "Please sign in again to cancel this connection." });
+      sendJson(response, 401, { error: "Please sign in again to update this connection." });
       return;
     }
     const connection = await findChatRequest(body.id);
     const userId = authenticated.id;
     const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
     if (!connection || connection.status === "Cancelled" || (userId !== connection.mentorId && userId !== requesterId)) {
-      sendJson(response, 403, { error: "Only members in this connection can cancel it." });
+      sendJson(response, 403, { error: "Only members in this connection can update it." });
       return;
     }
-    connection.status = "Cancelled";
+    if (body.action === "complete") {
+      connection.status = "Completed";
+    } else {
+      connection.status = "Cancelled";
+    }
     if (sql) {
       await sql`UPDATE mentorship_chat_requests SET request = ${JSON.stringify(connection)}::jsonb WHERE id = ${connection.id}`;
     } else {
