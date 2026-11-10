@@ -33,6 +33,7 @@ const reviewsPath = path.join(dataDirectory, "reviews.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
 const maxRequestBytes = 256 * 1024;
+const presenceOnlineWindowMs = 60 * 1000;
 const maxMessageRequestBytes = 4.25 * 1024 * 1024;
 const maxAttachmentBytes = 3 * 1024 * 1024;
 const allowedAttachmentTypes = new Set([
@@ -204,6 +205,18 @@ function saveAccounts() {
     const temporaryPath = `${accountsPath}.tmp`;
     await fs.writeFile(temporaryPath, JSON.stringify(accounts, null, 2), { mode: 0o600 });
     await fs.rename(temporaryPath, accountsPath);
+  });
+  return writeQueue;
+}
+
+function saveAccount(account) {
+  if (!sql) return saveAccounts();
+  writeQueue = writeQueue.then(async () => {
+    await sql`
+      UPDATE mentorship_accounts
+      SET account = ${JSON.stringify(account)}
+      WHERE id = ${account.id}
+    `;
   });
   return writeQueue;
 }
@@ -398,6 +411,7 @@ function readJson(request, maxBytes = maxRequestBytes) {
 }
 
 function publicAccount(account) {
+  const lastSeenAt = Date.parse(account.lastSeenAt || "");
   return {
     id: account.id,
     name: account.name,
@@ -408,6 +422,7 @@ function publicAccount(account) {
     interests: account.interests,
     goal: account.goal,
     status: account.status,
+    isOnline: Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt < presenceOnlineWindowMs,
     createdAt: account.createdAt || "",
     profileImage: account.profileImage || ""
   };
@@ -592,6 +607,7 @@ async function handleLogin(request, response) {
   const token = crypto.randomBytes(32).toString("base64url");
   account.sessionTokenHash = crypto.createHash("sha256").update(token).digest("hex");
   account.sessionExpiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+  account.lastSeenAt = new Date().toISOString();
   await saveAccounts();
   sendJson(response, 200, { user: { ...publicAccount(account), email: account.email }, token, restored });
 }
@@ -629,6 +645,18 @@ async function serveStatic(url, response) {
 async function handleRequest(request, response) {
   await expirePendingDeletions();
   const url = new URL(request.url, appOrigin);
+  if (request.method === "POST" && url.pathname === "/api/presence") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to update your presence." });
+      return;
+    }
+    const body = await readJson(request);
+    authenticated.lastSeenAt = body.online === false ? null : new Date().toISOString();
+    await saveAccount(authenticated);
+    sendJson(response, 200, { isOnline: Boolean(authenticated.lastSeenAt) });
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/accounts") {
     if (!await authenticatedAccount(request)) {
       sendJson(response, 401, { error: "Please sign in to browse community profiles." });

@@ -64,6 +64,7 @@ let navigationOwnerId = savedNavigation?.userId || "";
 const restoreNavigation = savedNavigation && savedNavigation.userId === savedUser.id;
 const messageSyncVersions = new Map();
 const messageSyncInFlight = new Map();
+let presenceSyncTask = Promise.resolve();
 let reviewSyncVersion = 0;
 const state = {
   view: restoreNavigation && validViews.has(savedNavigation.view) ? savedNavigation.view : "discover",
@@ -132,6 +133,27 @@ function matchingInterest(user, mentor) {
     .filter(token => token.length > 1 && !stopWords.has(token));
   const userInterests = new Set(tokens(`${user.interests || ""},${user.field || ""}`));
   return tokens(`${mentor.interests || ""},${mentor.field || ""}`).find(token => userInterests.has(token)) || "";
+}
+function updatePresence(isOnline = true) {
+  if (!authToken || !state.user.id || (isOnline && (document.visibilityState === "hidden" || !navigator.onLine))) {
+    return Promise.resolve();
+  }
+  const token = authToken;
+  const userId = state.user.id;
+  presenceSyncTask = presenceSyncTask.catch(() => {}).then(async () => {
+    const response = await fetch("/api/presence", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ online: isOnline })
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || `Presence update failed (HTTP ${response.status}).`);
+    if (state.user.id === userId) state.user.isOnline = Boolean(payload.isOnline);
+  }).catch(error => {
+    console.error("Unable to update online status", error);
+    logTestError("Presence update", error);
+  });
+  return presenceSyncTask;
 }
 async function syncCommunityAccounts() {
   if (!authToken) return;
@@ -504,6 +526,10 @@ function matchesMemberSearch(member, query) {
   ].join(" ").toLocaleLowerCase();
   return terms.some(term => profile.includes(term));
 }
+function presenceMarkup(member) {
+  const isOnline = Boolean(member?.isOnline);
+  return `<span class="presence-status ${isOnline ? "online" : "offline"}" aria-label="${isOnline ? "Online" : "Offline"}"><span class="presence-indicator"></span>${isOnline ? "Online" : "Offline"}</span>`;
+}
 function mentorCard(mentor) {
   const isMentor = mentor.role === "Mentor";
   const canRequestChat = state.user.role === "Student" && isMentor;
@@ -511,7 +537,7 @@ function mentorCard(mentor) {
   return `<article class="mentor-card">
     <div class="card-top"><div class="mentor-avatar ${isMentor ? "avatar-blue" : "avatar-you"}">${avatarContent(mentor.name, mentor.profileImage)}</div></div>
     <h3>${safe(mentor.name)}</h3><p class="mentor-role"><strong>${safe(mentor.role)}</strong>${mentor.field ? ` · ${safe(mentor.field)}` : ""}</p>
-    <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span></div>
+    <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span>${presenceMarkup(mentor)}</div>
     <p class="mentor-bio">${safe(mentor.goal || mentor.bio || mentor.interests || "This member has shared their profile and preferences.")}</p><div class="tag-list"><span class="tag">${safe(mentor.field || (mentor.interests || "Community member").split(",")[0])}</span></div>
     <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request another chat <span>↗</span></button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request a chat <span>↗</span></button>` : ""}</div>
   </article>`;
@@ -564,7 +590,7 @@ function renderMemberProfile() {
   const interests = (member.interests || "").split(",").map(value => value.trim()).filter(Boolean);
   const canRequestChat = state.user.role === "Student" && member.role === "Mentor";
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">Community profile</div><h1>${safe(member.name)}</h1><p>${safe(member.role)}${member.field ? ` · ${safe(member.field)}` : ""}</p></div><button class="button-quiet" data-view="discover">← Back to community</button></div>
-    <div class="public-profile-layout"><section class="profile-card public-profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar ${member.role === "Mentor" ? "avatar-blue" : "avatar-you"}">${avatarContent(member.name, member.profileImage)}</span><div><h2>${safe(member.name)}</h2><p>${safe(member.role)} · Community member</p></div></div><div class="public-preferences">
+    <div class="public-profile-layout"><section class="profile-card public-profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar ${member.role === "Mentor" ? "avatar-blue" : "avatar-you"}">${avatarContent(member.name, member.profileImage)}</span><div><h2>${safe(member.name)}</h2><p>${safe(member.role)} · Community member</p>${presenceMarkup(member)}</div></div><div class="public-preferences">
       <div><strong>School</strong><span>${safe(member.school || "Not shared")}</span></div><div><strong>Year of study</strong><span>${safe(member.year || "Not shared")}</span></div>
       <div class="preference-wide"><strong>Interests</strong><span>${interests.length ? interests.map(safe).join(", ") : "Not shared"}</span></div>
       <div class="preference-wide"><strong>Goals</strong><span>${safe(member.goal || "Not shared")}</span></div>
@@ -585,12 +611,12 @@ function renderMessages() {
     ? state.users.find(user => user.id === active.requesterId) || { name: active.requesterName || "Student", id: active.requesterId }
     : state.users.find(user => user.id === active.mentorId) || { name: active.mentorName || "Mentor", id: active.mentorId });
   const convoPanel = active && partner
-    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2><p>${safe(active.topic)} · Connected</p></div><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div><div class="message-list" id="message-list">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><label class="message-attach-button" for="message-attachment" title="Attach a file" aria-label="Attach a file">＋</label><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt,application/pdf,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/gif,image/jpeg,image/png,image/webp,text/csv,text/plain"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
+    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2>${presenceMarkup(partner)}<p>${safe(active.topic)} · Connected</p></div><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div><div class="message-list" id="message-list">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><label class="message-attach-button" for="message-attachment" title="Attach a file" aria-label="Attach a file">＋</label><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
     : `<section class="panel"><div class="panel-body"><div class="empty-state"><strong>Select a connection to message.</strong>Start a mentor session request to connect with another member.</div></div></section>`;
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A conversation can start anywhere</div><h1>Messages</h1><p>Message students and mentors after you connect through a session request.</p></div></div><div class="messages-layout"><section class="panel conversation-panel"><div class="panel-heading"><h2>Connections</h2></div><div class="conversation-list">${conversations.length ? conversations.map(booking => {
     const name = state.user.role === "Mentor" ? booking.requesterName || "Student" : booking.mentorName || "Mentor";
     const person = state.users.find(user => user.id === (state.user.role === "Mentor" ? booking.requesterId : booking.mentorId));
-    return `<button class="conversation-choice ${booking.id === state.activeConversationId ? "selected" : ""}" data-message="${safe(booking.id)}"><span class="avatar ${state.user.role === "Mentor" ? "avatar-you" : "avatar-blue"}">${avatarContent(name, person?.profileImage)}</span><span><strong>${safe(name)}</strong><small>${safe(booking.topic)}</small></span></button>`;
+    return `<button class="conversation-choice ${booking.id === state.activeConversationId ? "selected" : ""}" data-message="${safe(booking.id)}"><span class="avatar ${state.user.role === "Mentor" ? "avatar-you" : "avatar-blue"}">${avatarContent(name, person?.profileImage)}</span><span><strong>${safe(name)}</strong><small>${safe(booking.topic)}</small>${presenceMarkup(person)}</span></button>`;
   }).join("") : `<div class="muted-copy conversation-empty">No connections yet. Request a mentor chat to start messaging.</div>`}</div></section>${convoPanel}</div></div>`;
 }
 function render() {
@@ -701,6 +727,7 @@ async function switchRecentAccount(userId) {
     selectedProfileImage = state.user.profileImage || "";
     initializeNotificationState();
     rememberRecentAccount(state.user, authToken);
+    await updatePresence();
     closeModal();
     await syncCommunityAccounts();
     await syncConnections();
@@ -810,6 +837,7 @@ document.addEventListener("click", async event => {
     openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
   }
   if (target.hasAttribute("data-logout")) {
+    await updatePresence(false);
     authToken = "";
     localStorage.removeItem("mm-token");
     closeModal(); showAuth(); return;
@@ -1075,6 +1103,7 @@ document.addEventListener("submit", async event => {
         selectedProfileImage = state.user.profileImage || "";
         rememberRecentAccount(state.user, authToken);
         initializeNotificationState();
+        await updatePresence();
         await syncCommunityAccounts();
         await syncConnections();
         await syncNotifications();
@@ -1102,6 +1131,7 @@ if (normalizeEmail(savedUser.email) && authToken) {
   document.getElementById("auth-root").classList.remove("active");
   document.querySelector(".app-shell").style.display = "";
   initializeNotificationState();
+  updatePresence();
   syncCommunityAccounts();
   syncConnections();
   syncNotifications();
@@ -1109,6 +1139,11 @@ if (normalizeEmail(savedUser.email) && authToken) {
   showAuth("login");
   syncCommunityAccounts();
 }
+setInterval(() => updatePresence(), 25000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") updatePresence();
+});
+window.addEventListener("online", () => updatePresence());
 setInterval(() => {
   syncCommunityAccounts();
   syncConnections();
