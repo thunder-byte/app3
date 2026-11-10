@@ -118,7 +118,7 @@ let callRemoteStream = null;
 let callPollInFlight = false;
 let callAnswerAppliedId = "";
 let callStatusText = "";
-let callIceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+let callFailureNotified = false;
 let toastTimeout;
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 function apiHeaders(json = false) {
@@ -322,13 +322,9 @@ async function prepareCallPeerConnection(mode) {
   if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
     throw new Error("Calls require a supported browser and a secure connection (HTTPS or localhost).");
   }
-  const configResponse = await fetch("/api/calls", { headers: apiHeaders() });
-  const configPayload = await readJsonResponse(configResponse);
-  if (!configResponse.ok) throw new Error(configPayload.error || `Call setup failed (HTTP ${configResponse.status}).`);
-  if (Array.isArray(configPayload.iceServers) && configPayload.iceServers.length) callIceServers = configPayload.iceServers;
   callLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === "video" });
   callRemoteStream = new MediaStream();
-  callPeerConnection = new RTCPeerConnection({ iceServers: callIceServers });
+  callPeerConnection = new RTCPeerConnection({ iceServers: [] });
   for (const track of callLocalStream.getTracks()) callPeerConnection.addTrack(track, callLocalStream);
   callPeerConnection.ontrack = event => {
     for (const track of event.streams[0]?.getTracks() || [event.track]) {
@@ -340,7 +336,13 @@ async function prepareCallPeerConnection(mode) {
     if (callPeerConnection?.connectionState === "connected") callStatusText = "Connected";
     else if (callPeerConnection?.connectionState === "connecting") callStatusText = "Connecting…";
     else if (callPeerConnection?.connectionState === "disconnected") callStatusText = "Reconnecting…";
-    else if (callPeerConnection?.connectionState === "failed") callStatusText = "Connection failed";
+    else if (callPeerConnection?.connectionState === "failed") {
+      callStatusText = "Direct connection blocked. Try the same Wi-Fi network.";
+      if (!callFailureNotified) {
+        callFailureNotified = true;
+        showToast("Your network blocked the direct call. Calls work without a relay when both devices allow a direct connection, such as on the same Wi-Fi.");
+      }
+    }
     renderCallOverlay();
   };
 }
@@ -418,6 +420,7 @@ async function clearCallState() {
   callRemoteStream = null;
   callAnswerAppliedId = "";
   callStatusText = "";
+  callFailureNotified = false;
   renderCallOverlay();
 }
 async function finishCall(notifyServer = true, showMessage = false) {
@@ -441,7 +444,6 @@ async function syncCalls() {
     const response = await fetch("/api/calls", { headers: apiHeaders() });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload.error || `Call sync failed (HTTP ${response.status}).`);
-    if (Array.isArray(payload.iceServers) && payload.iceServers.length) callIceServers = payload.iceServers;
     const calls = Array.isArray(payload.calls) ? payload.calls : [];
     if (callSession) {
       const current = calls.find(call => call.id === callSession.id);

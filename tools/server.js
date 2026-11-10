@@ -1017,16 +1017,7 @@ async function handleRequest(request, response) {
         activeCalls.push(call);
       }
       if (!sql && callStoreChanged) await saveCalls();
-      const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
-      const turnUrls = String(process.env.TURN_SERVER_URL || "").split(",").map(value => value.trim()).filter(Boolean);
-      if (turnUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
-        iceServers.push({
-          urls: turnUrls,
-          username: process.env.TURN_USERNAME,
-          credential: process.env.TURN_CREDENTIAL
-        });
-      }
-      sendJson(response, 200, { calls: activeCalls, iceServers });
+      sendJson(response, 200, { calls: activeCalls });
       return;
     }
 
