@@ -997,17 +997,6 @@ document.addEventListener("submit", async event => {
   }
 });
 document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
-let lastScrollY = window.scrollY;
-window.addEventListener("scroll", () => {
-  const topbar = document.querySelector(".topbar");
-  const currentScrollY = window.scrollY;
-  if (currentScrollY < 24 || currentScrollY < lastScrollY) {
-    topbar.classList.remove("topbar-hidden");
-  } else if (currentScrollY > lastScrollY + 2) {
-    topbar.classList.add("topbar-hidden");
-  }
-  lastScrollY = currentScrollY;
-}, { passive: true });
 modalRoot.addEventListener("click", event => { if (event.target === modalRoot) closeModal(); });
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal();
