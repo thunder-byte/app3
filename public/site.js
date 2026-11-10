@@ -31,6 +31,22 @@ const chatAttachmentExtensions = {
   xls: "application/vnd.ms-excel",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 };
+const profileInterestOptions = [
+  "Accounting", "Aerospace Engineering", "Agriculture", "Animal Science", "Anthropology",
+  "Architecture", "Art History", "Artificial Intelligence", "Astronomy", "Biochemistry",
+  "Biology", "Biomedical Engineering", "Business", "Chemical Engineering", "Chemistry",
+  "Civil Engineering", "Climate Science", "Communications", "Computer Science", "Creative Writing",
+  "Cybersecurity", "Data Science", "Dentistry", "Design", "Economics",
+  "Education", "Electrical Engineering", "Environmental Science", "Film", "Finance",
+  "Fine Arts", "Food Science", "Game Development", "Geology", "Graphic Design",
+  "Health Sciences", "History", "Human Resources", "Industrial Design", "Information Technology",
+  "Journalism", "Law", "Linguistics", "Marketing", "Mathematics",
+  "Mechanical Engineering", "Medicine", "Music", "Neuroscience", "Nursing",
+  "Nutrition", "Pharmacy", "Philosophy", "Physics", "Political Science",
+  "Psychology", "Public Health", "Public Policy", "Robotics", "Social Work",
+  "Sociology", "Software Engineering", "Sports Science", "Statistics", "Theater",
+  "Urban Planning", "Veterinary Science", "Web Development"
+];
 const maxChatAttachmentBytes = 3 * 1024 * 1024;
 function logTestError(source, error) {
   console.error(`${source}:`, error);
@@ -84,7 +100,8 @@ const state = {
     .map(([mentorId, review]) => [mentorId, Array.isArray(review) ? review : [review]])),
   users: savedUsers.filter(user => !legacyDemoIds.has(user.id) && !legacyDemoEmails.has(user.email)).map(({ passwordSalt, passwordHash, ...user }) => user),
   reports: savedReports.filter(report => report.title !== "Inappropriate message reported"),
-  query: ""
+  query: "",
+  mentorSort: "recommended"
 };
 let selectedProfileImage = state.user.profileImage || "";
 let profileImageTask = Promise.resolve();
@@ -545,13 +562,26 @@ function mentorCard(mentor) {
 function renderDiscover() {
   const activeMembers = state.users.filter(user => user.status === "Active" && user.id !== state.user.id);
   const matches = activeMembers.filter(mentor => matchesMemberSearch(mentor, state.query));
+  matches.sort((left, right) => {
+    if (state.mentorSort === "name") return left.name.localeCompare(right.name);
+    if (state.mentorSort === "newest") return String(right.createdAt || "").localeCompare(String(left.createdAt || "")) || left.name.localeCompare(right.name);
+    if (state.mentorSort === "online") return Number(Boolean(right.isOnline)) - Number(Boolean(left.isOnline)) || left.name.localeCompare(right.name);
+    if (state.mentorSort === "interest") {
+      const leftInterests = String(left.interests || left.field || "").toLocaleLowerCase();
+      const rightInterests = String(right.interests || right.field || "").toLocaleLowerCase();
+      return leftInterests.localeCompare(rightInterests) || left.name.localeCompare(right.name);
+    }
+    const leftMatch = matchingInterest(state.user, left) ? 1 : 0;
+    const rightMatch = matchingInterest(state.user, right) ? 1 : 0;
+    return rightMatch - leftMatch || left.name.localeCompare(right.name);
+  });
   return `<div class="view-wrap">
     <section class="hero"><div><div class="eyebrow">A little guidance goes a long way</div><h1>Your future has a friend in it.</h1><p>Meet students and mentors, explore their interests, and connect when you're ready.</p></div><div class="hero-side"><div class="match-pill">✳ &nbsp;<b>${activeMembers.length} members</b> available</div></div></section>
     <section class="featured-banner"><div class="banner-copy"><span class="banner-tag"><span></span> Your next chapter starts here</span><h2>Big dreams. Real people in your corner.</h2><p>A 20-minute conversation could help you see your next step a little more clearly.</p><button class="button-primary" data-scroll-mentors>Explore your matches <span>↓</span></button></div>
       <div class="banner-art" aria-hidden="true"><div class="floating-card one"><strong>Good things grow here</strong>Curiosity is a great place to start.</div><div class="mentor-illustration"><div class="person-head"></div><div class="person-hair"></div><div class="person-body"></div><div class="person-shirt"></div></div><div class="floating-card two"><span class="tiny-avatar">✳</span><span>New connections,<br>new possibilities</span></div></div>
     </section>
     <section id="mentor-section"><div class="section-heading"><div><h2>Community members</h2><p>Explore member profiles and see what they're interested in.</p></div><button class="button-quiet" data-view="sessions">Your sessions <span>→</span></button></div>
-      <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search mentors by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search mentors by any profile detail"></label>
+      <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search mentors by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search mentors by any profile detail"></label><label class="sort-control"><span>Sort by</span><select id="mentor-sort" class="filter-select" aria-label="Sort mentors"><option value="recommended" ${state.mentorSort === "recommended" ? "selected" : ""}>Recommended</option><option value="name" ${state.mentorSort === "name" ? "selected" : ""}>Name A–Z</option><option value="interest" ${state.mentorSort === "interest" ? "selected" : ""}>Academic interest A–Z</option><option value="newest" ${state.mentorSort === "newest" ? "selected" : ""}>Newest</option><option value="online" ${state.mentorSort === "online" ? "selected" : ""}>Online first</option></select></label>
         <span class="result-count">${matches.length} mentors</span></div>
       <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${state.query ? "No matching members found." : "No community profiles yet."}</strong>${state.query ? "Try another word or phrase to find a mentor." : "Member profiles will appear here once they join the community."}</div>`}</div>
     </section></div>`;
@@ -567,14 +597,29 @@ function renderSessions() {
       const conversationName = state.user.role === "Mentor"
         ? (booking.requesterName || booking.requesterEmail)
         : (booking.mentorName || "Mentor");
-      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(booking.time)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student goal: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? state.user.role === "Mentor" ? `<span class="muted-copy">Completed</span>` : `<button class="button-secondary" data-review="${booking.mentorId}">${reviewsFor(booking.mentorId).some(review => review.reviewerId === state.user.id || review.reviewerEmail === state.user.email) ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button></div></article>`;
+      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(booking.time)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? state.user.role === "Mentor" ? `<span class="muted-copy">Completed</span>` : `<button class="button-secondary" data-review="${booking.mentorId}">${reviewsFor(booking.mentorId).some(review => review.reviewerId === state.user.id || review.reviewerEmail === state.user.email) ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button></div></article>`;
     }).join("")}</div>` : `<div class="empty-state"><strong>Your calendar has room for a great conversation.</strong>Find a mentor and book your first session.<br><button class="button-primary" style="margin-top:15px" data-view="discover">Browse mentors</button></div>`}</div></section></div>`;
+}
+function renderProfileInterestOptions(interests, query = "") {
+  const selectedValues = (Array.isArray(interests) ? interests : String(interests || "").split(","))
+    .map(value => value.trim())
+    .filter(Boolean);
+  const selectedSet = new Set(selectedValues.map(value => value.toLocaleLowerCase()));
+  const knownValues = new Set(profileInterestOptions.map(value => value.toLocaleLowerCase()));
+  const legacyOptions = selectedValues.filter(value => !knownValues.has(value.toLocaleLowerCase()));
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const options = [
+    ...profileInterestOptions.map(value => ({ value, selected: selectedSet.has(value.toLocaleLowerCase()) })),
+    ...legacyOptions.map(value => ({ value, selected: true }))
+  ].filter(option => !normalizedQuery || option.selected || option.value.toLocaleLowerCase().includes(normalizedQuery));
+  if (!options.length) return `<option disabled>No matching interests</option>`;
+  return options.map(option => `<option value="${safe(option.value)}" ${option.selected ? "selected" : ""}>${safe(option.value)}</option>`).join("");
 }
 function renderProfile() {
   const profileImage = selectedProfileImage || state.user.profileImage || "";
-  return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A little about you</div><h1>My profile</h1><p>Help mentors understand what you care about and where you're headed.</p></div></div>
+  return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A little about you</div><h1>My profile</h1><p>Share your interests and a little about yourself with the community.</p></div></div>
     <div class="profile-layout"><section class="profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar avatar-you profile-picture-preview">${avatarContent(state.user.name, profileImage)}</span><div><h2>${safe(state.user.name)}</h2><p>${safe(state.user.role || "Student")} · Making room for what's next</p></div></div>
-      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#888d83;font-size:9px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interests">Academic & career interests</label><input id="profile-interests" name="interests" value="${safe(state.user.interests)}" placeholder="Design, technology, climate science..."></div><div class="field full"><label for="profile-goal">What are you hoping to explore?</label><textarea id="profile-goal" name="goal" placeholder="Tell mentors a bit about your goals...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
+      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#888d83;font-size:9px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-search">Academic & career interests</label><input id="profile-interest-search" type="search" placeholder="Search interests..." aria-label="Search academic and career interests"><select id="profile-interests" name="interests" multiple size="6" aria-describedby="profile-interests-help">${renderProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose one or more options. Hold Ctrl (Windows) or Command (Mac) to select multiple interests.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
     </section><aside class="profile-side"><section class="panel"><div class="panel-heading"><h2>Your interests</h2><button class="button-quiet" data-profile-edit>Edit</button></div><div class="panel-body">${(state.user.interests || "").split(",").filter(Boolean).map(item => `<div class="interest-item"><span>${safe(item.trim())}</span><span>↗</span></div>`).join("") || `<span style="font-size:11px;color:#96998f">Add interests to personalize your matches.</span>`}</div></section><section class="panel profile-reviews"><div class="panel-heading"><h2>Reviews about you</h2></div><div class="panel-body">${reviewListMarkup(state.user.id)}</div></section><div class="profile-tip"><strong>Good profiles get great conversations.</strong>Sharing what you're curious about helps mentors show up with ideas made for you.</div></aside></div></div>`;
 }
 function reviewListMarkup(memberId) {
@@ -593,7 +638,7 @@ function renderMemberProfile() {
     <div class="public-profile-layout"><section class="profile-card public-profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar ${member.role === "Mentor" ? "avatar-blue" : "avatar-you"}">${avatarContent(member.name, member.profileImage)}</span><div><h2>${safe(member.name)}</h2><p>${safe(member.role)} · Community member</p>${presenceMarkup(member)}</div></div><div class="public-preferences">
       <div><strong>School</strong><span>${safe(member.school || "Not shared")}</span></div><div><strong>Year of study</strong><span>${safe(member.year || "Not shared")}</span></div>
       <div class="preference-wide"><strong>Interests</strong><span>${interests.length ? interests.map(safe).join(", ") : "Not shared"}</span></div>
-      <div class="preference-wide"><strong>Goals</strong><span>${safe(member.goal || "Not shared")}</span></div>
+      <div class="preference-wide"><strong>About me</strong><span>${safe(member.goal || "Not shared")}</span></div>
     </div><div class="profile-actions">${connection ? `<button class="button-secondary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request another chat</button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Reviews</h2><p>Feedback shared by people who connected with ${safe(member.name.split(" ")[0])}.</p></div></div><div class="panel-body">${reviewListMarkup(member.id)}</div></section></div></div>`;
 }
@@ -890,9 +935,19 @@ document.addEventListener("click", async event => {
   if (target.id === "notifications") { showToast("You're all caught up — nice work."); }
 });
 document.addEventListener("input", event => {
+  if (event.target.id === "profile-interest-search") {
+    const select = document.getElementById("profile-interests");
+    const selectedInterests = [...select.selectedOptions].map(option => option.value);
+    select.innerHTML = renderProfileInterestOptions(selectedInterests, event.target.value);
+    return;
+  }
   if (event.target.id === "mentor-search") { state.query = event.target.value; const cursor = event.target.selectionStart; render(); const input = document.getElementById("mentor-search"); input.focus(); input.setSelectionRange(cursor, cursor); }
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "mentor-sort") {
+    state.mentorSort = event.target.value;
+    render();
+  }
   if (event.target.id === "message-attachment" && event.target.files?.[0]) {
     const file = event.target.files[0];
     if (!chatAttachmentType(file) || file.size === 0 || file.size > maxChatAttachmentBytes) {
@@ -1026,7 +1081,8 @@ document.addEventListener("submit", async event => {
     const email = normalizeEmail(data.get("email"));
     const ownMember = state.users.find(user => user.id === state.user.id || normalizeEmail(user.email) === normalizeEmail(state.user.email));
     if (emailAlreadyInUse(email, ownMember?.id)) { showToast("That email is already used by another account."); return; }
-    const updatedProfile = { name: data.get("name").trim(), email, role: data.get("role"), school: data.get("school").trim(), year: data.get("year"), interests: data.get("interests").trim(), goal: data.get("goal").trim(), field: data.get("interests").trim().split(",")[0].trim(), profileImage: selectedProfileImage || state.user.profileImage || "" };
+    const interests = data.getAll("interests").map(value => String(value).trim()).filter(Boolean).join(", ");
+    const updatedProfile = { name: data.get("name").trim(), email, role: data.get("role"), school: data.get("school").trim(), year: data.get("year"), interests, goal: data.get("goal").trim(), field: interests.split(",")[0].trim(), profileImage: selectedProfileImage || state.user.profileImage || "" };
     let savedProfile;
     try {
       const response = await fetch("/api/account/profile", {
