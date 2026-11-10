@@ -284,7 +284,7 @@ function renderCallOverlay() {
     return;
   }
   const videoCall = callSession.mode === "video";
-  callRoot.innerHTML = `<section class="call-card active-call" role="dialog" aria-modal="true" aria-labelledby="call-title"><div class="call-header"><div><span class="call-eyebrow">${videoCall ? "Video" : "Audio"} call</span><h2 id="call-title">${safe(callSession.callerId === state.user.id ? callSession.recipientName || "Your connection" : callSession.callerName)}</h2></div><span class="call-status" aria-live="polite">${safe(callStatusLabel())}</span></div><div class="call-media ${videoCall ? "" : "audio-call"}"><video id="call-remote-video" autoplay playsinline ${videoCall ? "" : "hidden"}></video><audio id="call-remote-audio" autoplay></audio><div class="call-audio-placeholder" ${videoCall ? "hidden" : ""}>${safe((callSession.callerId === state.user.id ? callSession.recipientName : callSession.callerName) || "Connected")}</div><video id="call-local-video" autoplay muted playsinline ${videoCall ? "" : "hidden"}></video></div><div class="call-actions"><button class="button-secondary" type="button" data-call-mute aria-pressed="false">Mute</button>${videoCall ? `<button class="button-secondary" type="button" data-call-video aria-pressed="true">Turn camera off</button>` : ""}<button class="button-danger" type="button" data-call-end>End call</button></div></section>`;
+  callRoot.innerHTML = `<section class="call-card active-call" role="dialog" aria-modal="true" aria-labelledby="call-title"><div class="call-header"><div><span class="call-eyebrow">${videoCall ? "Video" : "Audio"} call</span><h2 id="call-title">${safe(callSession.callerId === state.user.id ? callSession.recipientName || "Your connection" : callSession.callerName)}</h2></div><span class="call-status" aria-live="polite">${safe(callStatusLabel())}</span></div><div class="call-media ${videoCall ? "" : "audio-call"}"><video id="call-remote-video" autoplay muted playsinline ${videoCall ? "" : "hidden"}></video><audio id="call-remote-audio" autoplay></audio><div class="call-audio-placeholder" ${videoCall ? "hidden" : ""}>${safe((callSession.callerId === state.user.id ? callSession.recipientName : callSession.callerName) || "Connected")}</div><video id="call-local-video" autoplay muted playsinline ${videoCall ? "" : "hidden"}></video></div><div class="call-actions"><button class="button-secondary" type="button" data-call-mute aria-pressed="false">Mute</button>${videoCall ? `<button class="button-secondary" type="button" data-call-video aria-pressed="true">Turn camera off</button>` : ""}<button class="button-danger" type="button" data-call-end>End call</button></div></section>`;
   const localVideo = callRoot.querySelector("#call-local-video");
   const remoteVideo = callRoot.querySelector("#call-remote-video");
   const remoteAudio = callRoot.querySelector("#call-remote-audio");
@@ -339,6 +339,7 @@ async function prepareCallPeerConnection(mode) {
   callPeerConnection.onconnectionstatechange = () => {
     if (callPeerConnection?.connectionState === "connected") callStatusText = "Connected";
     else if (callPeerConnection?.connectionState === "connecting") callStatusText = "Connecting…";
+    else if (callPeerConnection?.connectionState === "disconnected") callStatusText = "Reconnecting…";
     else if (callPeerConnection?.connectionState === "failed") callStatusText = "Connection failed";
     renderCallOverlay();
   };
@@ -453,9 +454,11 @@ async function syncCalls() {
         const changed = current.status !== callSession.status ||
           current.updatedAt !== callSession.updatedAt ||
           current.answer?.sdp !== callSession.answer?.sdp;
-        callSession = { ...callSession, ...current };
+        callSession = { ...current, recipientName: callSession.recipientName || current.recipientName };
         if (callSession.callerId === state.user.id && current.answer && callAnswerAppliedId !== current.id && callPeerConnection) {
-          await callPeerConnection.setRemoteDescription(current.answer);
+          if (!callPeerConnection.remoteDescription) await callPeerConnection.setRemoteDescription(current.answer);
+          const connected = await callApi("connected", { requestId: current.requestId, callId: current.id });
+          callSession = { ...connected.call, recipientName: callSession.recipientName };
           callAnswerAppliedId = current.id;
           callStatusText = "Connecting…";
         }

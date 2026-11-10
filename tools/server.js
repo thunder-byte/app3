@@ -990,29 +990,33 @@ async function handleRequest(request, response) {
       }
       const now = Date.now();
       const activeCalls = [];
+      let callStoreChanged = false;
       for (const call of accountCalls) {
         const age = now - Date.parse(call.updatedAt);
         if (call.status === "ringing" && age > 90 * 1000) {
           call.status = "ended";
+          delete call.offer;
+          delete call.answer;
           call.updatedAt = new Date(now).toISOString();
+          callStoreChanged = true;
           await saveCall(call);
         } else if (call.status === "active" && age > 4 * 60 * 60 * 1000) {
           call.status = "ended";
+          delete call.offer;
+          delete call.answer;
           call.updatedAt = new Date(now).toISOString();
+          callStoreChanged = true;
           await saveCall(call);
         }
         if (call.status === "ended" && age > 5 * 60 * 1000) {
           calls = calls.filter(item => item.requestId !== call.requestId);
           if (sql) await sql`DELETE FROM mentorship_calls WHERE request_id = ${call.requestId}`;
+          callStoreChanged = true;
           continue;
         }
         activeCalls.push(call);
       }
-      if (!sql) {
-        const visibleCalls = new Set(activeCalls.map(call => call.requestId));
-        calls = calls.filter(call => call.status !== "ended" || visibleCalls.has(call.requestId));
-        await saveCalls();
-      }
+      if (!sql && callStoreChanged) await saveCalls();
       const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
       const turnUrls = String(process.env.TURN_SERVER_URL || "").split(",").map(value => value.trim()).filter(Boolean);
       if (turnUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
@@ -1092,6 +1096,18 @@ async function handleRequest(request, response) {
       sendJson(response, 200, { call });
       return;
     }
+    if (action === "connected") {
+      if (call.callerId !== authenticated.id || call.status !== "active") {
+        sendJson(response, 403, { error: "Only the caller can confirm this connection." });
+        return;
+      }
+      delete call.offer;
+      delete call.answer;
+      call.updatedAt = now;
+      await saveCall(call);
+      sendJson(response, 200, { call });
+      return;
+    }
     if (action === "end") {
       if (authenticated.id !== call.callerId && authenticated.id !== call.recipientId) {
         sendJson(response, 403, { error: "Only a participant can end this call." });
@@ -1099,6 +1115,8 @@ async function handleRequest(request, response) {
       }
       call.status = "ended";
       call.endedBy = authenticated.id;
+      delete call.offer;
+      delete call.answer;
       call.updatedAt = now;
       await saveCall(call);
       sendJson(response, 200, { call });
