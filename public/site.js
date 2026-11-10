@@ -18,12 +18,16 @@ const savedReviews = readStore("mm-reviews", {});
 const savedReports = readStore("mm-reports", []);
 const savedUser = readStore("mm-user", { name: "Your name", email: "", interests: "", goal: "" });
 const savedToken = readStore("mm-token", "");
+const savedRecentAccounts = readStore("mm-recent-accounts", []);
 const savedNavigation = readStore("mm-navigation", null);
 const validViews = new Set(["discover", "sessions", "profile", "member", "messages"]);
 const savedAuthUsers = readStore("mm-auth-users", []);
 const savedUsersHaveClientCredentials = savedUsers.some(user => user.passwordSalt || user.passwordHash);
 let authUsers = savedAuthUsers;
 let authToken = savedToken;
+let recentAccounts = Array.isArray(savedRecentAccounts)
+  ? savedRecentAccounts.filter(account => account && typeof account.id === "string" && typeof account.token === "string" && account.user && typeof account.user.email === "string")
+  : [];
 let navigationOwnerId = savedNavigation?.userId || "";
 const restoreNavigation = savedNavigation && savedNavigation.userId === savedUser.id;
 const messageSyncVersions = new Map();
@@ -307,6 +311,29 @@ function persist() {
   } catch (error) { console.error("Unable to save MentorshipMatch data", error); showToast("Your changes could not be saved in this browser."); }
 }
 if (state.user !== savedUser || state.bookings.length !== savedBookings.length || Object.keys(state.reviews).length !== Object.keys(savedReviews).length || state.users.length !== savedUsers.length || state.reports.length !== savedReports.length || savedUsersHaveClientCredentials) persist();
+function saveRecentAccounts() {
+  try {
+    localStorage.setItem("mm-recent-accounts", JSON.stringify(recentAccounts));
+  } catch (error) {
+    console.error("Unable to save recently used accounts", error);
+    showToast("Recently used accounts could not be saved in this browser.");
+  }
+}
+function rememberRecentAccount(user, token) {
+  if (!user?.id || !user.email || !token) return;
+  recentAccounts = [
+    { id: user.id, user: { ...user }, token, lastUsedAt: Date.now() },
+    ...recentAccounts.filter(account => account.id !== user.id)
+  ].slice(0, 5);
+  saveRecentAccounts();
+}
+function removeRecentAccount(userId) {
+  recentAccounts = recentAccounts.filter(account => account.id !== userId);
+  saveRecentAccounts();
+}
+if (savedUser.id && savedUser.email && savedToken && !recentAccounts.some(account => account.id === savedUser.id)) {
+  rememberRecentAccount(savedUser, savedToken);
+}
 function initials(name) { return String(name || "YN").split(/\s+/).map(part => part[0]).slice(0, 2).join("").toUpperCase(); }
 function avatarContent(name, image) {
   return image ? `<img src="${safe(image)}" alt="" />` : initials(name);
@@ -565,13 +592,68 @@ function showAuth(mode = "login") {
   const authRoot = document.getElementById("auth-root");
   authRoot.classList.add("active");
   const isSignup = mode === "signup";
-  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There's more than one way to get where you're going.</h1><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Sign in within 24 hours of requesting deletion to restore your account."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div><div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
+  const recentAccountList = !isSignup && recentAccounts.length
+    ? `<div class="recent-accounts"><p>Switch to a recently used account</p>${recentAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>`
+    : "";
+  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There's more than one way to get where you're going.</h1><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Sign in within 24 hours of requesting deletion to restore your account."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div>${recentAccountList}<div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
   document.querySelector("[data-auth-switch]").addEventListener("click", () => showAuth(isSignup ? "login" : "signup"));
+}
+async function switchRecentAccount(userId) {
+  const account = recentAccounts.find(item => item.id === userId);
+  if (!account) {
+    showToast("That recently used account is no longer available.");
+    return;
+  }
+  const previousToken = authToken;
+  authToken = account.token;
+  try {
+    const response = await fetch("/api/accounts", { headers: apiHeaders() });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+      if (response.status === 401) {
+        removeRecentAccount(userId);
+        authToken = previousToken;
+        showToast("That saved session has expired. Sign in with your password to continue.");
+        return;
+      }
+      throw new Error(payload.error || `Account switch failed (HTTP ${response.status}).`);
+    }
+    const verifiedUser = (payload.users || []).find(user => user.id === account.id);
+    if (!verifiedUser) {
+      removeRecentAccount(userId);
+      throw new Error("That account is no longer active. Sign in again to continue.");
+    }
+    localStorage.setItem("mm-token", JSON.stringify(authToken));
+    state.user = { ...account.user, ...verifiedUser, email: account.user.email };
+    state.bookings = [];
+    state.messages = {};
+    state.view = "discover";
+    state.profileId = "";
+    state.activeConversationId = "";
+    navigationOwnerId = state.user.id;
+    selectedProfileImage = state.user.profileImage || "";
+    initializeNotificationState();
+    rememberRecentAccount(state.user, authToken);
+    closeModal();
+    await syncCommunityAccounts();
+    await syncConnections();
+    await syncNotifications();
+    persist();
+    document.getElementById("auth-root").classList.remove("active");
+    document.querySelector(".app-shell").style.display = "";
+    render();
+    showToast(`Switched to ${state.user.name || state.user.email}.`);
+  } catch (error) {
+    authToken = previousToken;
+    console.error("Unable to switch accounts", error);
+    showToast(error.message || "Unable to switch to that account.");
+  }
 }
 document.addEventListener("click", async event => {
   if (!event.target.closest(".notification-menu-wrap")) closeNotificationMenu();
   const target = event.target.closest("button");
   if (!target) return;
+  if (target.hasAttribute("data-switch-account")) { await switchRecentAccount(target.dataset.switchAccount); return; }
   if (target.id === "notifications") { toggleNotificationMenu(); return; }
   if (target.hasAttribute("data-notification-message")) {
     closeNotificationMenu();
@@ -649,7 +731,8 @@ document.addEventListener("click", async event => {
   if (target.hasAttribute("data-scroll-mentors")) { document.getElementById("mentor-section").scrollIntoView({ behavior: "smooth" }); return; }
   if (target.hasAttribute("data-profile-edit")) { document.getElementById("profile-name").focus(); return; }
   if (target.id === "account-button") {
-    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
+    const otherAccounts = recentAccounts.filter(account => account.id !== state.user.id);
+    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
   }
   if (target.hasAttribute("data-logout")) {
     authToken = "";
@@ -672,6 +755,7 @@ document.addEventListener("click", async event => {
   }
   if (target.hasAttribute("data-delete-own")) {
     const email = state.user.email;
+    const deletedUserId = state.user.id;
     const ownMember = state.users.find(user => user.email === email);
     target.disabled = true;
     try {
@@ -695,6 +779,7 @@ document.addEventListener("click", async event => {
     state.bookings = [];
     state.reviews = {};
     state.user = { name: "Your name", email: "", interests: "", goal: "" };
+    removeRecentAccount(deletedUserId);
     authToken = "";
     localStorage.removeItem("mm-token");
     persist(); closeModal(); showAuth("login"); showToast("Account scheduled for deletion. Sign in within 24 hours to restore it."); return;
@@ -819,6 +904,7 @@ document.addEventListener("submit", async event => {
     const ownMember = state.users.find(user => user.id === state.user.id || normalizeEmail(user.email) === normalizeEmail(state.user.email));
     if (emailAlreadyInUse(email, ownMember?.id)) { showToast("That email is already used by another account."); return; }
     const updatedProfile = { name: data.get("name").trim(), email, role: data.get("role"), school: data.get("school").trim(), year: data.get("year"), interests: data.get("interests").trim(), goal: data.get("goal").trim(), field: data.get("interests").trim().split(",")[0].trim(), profileImage: selectedProfileImage || state.user.profileImage || "" };
+    let savedProfile;
     try {
       const response = await fetch("/api/account/profile", {
         method: "POST",
@@ -827,19 +913,22 @@ document.addEventListener("submit", async event => {
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `Profile save failed (HTTP ${response.status}).`);
+      if (!payload.user || payload.user.id !== state.user.id) throw new Error("The server did not confirm the saved profile.");
+      savedProfile = payload.user;
     } catch (error) {
       console.error("Unable to save profile", error);
       logTestError("Profile save", error);
       showToast(error.message || "Your profile could not be saved.");
       return;
     }
-    state.user = { ...state.user, ...updatedProfile };
+    state.user = { ...state.user, ...savedProfile, email };
     selectedProfileImage = state.user.profileImage || "";
     if (ownMember) {
       Object.assign(ownMember, { name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: state.user.field, profileImage: state.user.profileImage });
     } else {
       state.users.push({ id: state.user.id, name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: (state.user.interests || "").split(",")[0].trim(), profileImage: state.user.profileImage, status: "Active" });
     }
+    rememberRecentAccount(state.user, authToken);
     persist(); render(); showToast("Your profile is looking good."); return;
   }
   if (form.id === "auth-form") {
@@ -889,6 +978,7 @@ document.addEventListener("submit", async event => {
         navigationOwnerId = payload.user.id;
         state.user = payload.user;
         selectedProfileImage = state.user.profileImage || "";
+        rememberRecentAccount(state.user, authToken);
         initializeNotificationState();
         await syncCommunityAccounts();
         await syncConnections();
@@ -907,6 +997,17 @@ document.addEventListener("submit", async event => {
   }
 });
 document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
+let lastScrollY = window.scrollY;
+window.addEventListener("scroll", () => {
+  const topbar = document.querySelector(".topbar");
+  const currentScrollY = window.scrollY;
+  if (currentScrollY < 24 || currentScrollY < lastScrollY) {
+    topbar.classList.remove("topbar-hidden");
+  } else if (currentScrollY > lastScrollY + 2) {
+    topbar.classList.add("topbar-hidden");
+  }
+  lastScrollY = currentScrollY;
+}, { passive: true });
 modalRoot.addEventListener("click", event => { if (event.target === modalRoot) closeModal(); });
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal();
