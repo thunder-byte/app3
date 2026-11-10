@@ -110,6 +110,15 @@ let notificationOwnerId = "";
 let knownMentorIds = null;
 const viewContainer = document.getElementById("view-container");
 const modalRoot = document.getElementById("modal-root");
+const callRoot = document.getElementById("call-root");
+let callSession = null;
+let callPeerConnection = null;
+let callLocalStream = null;
+let callRemoteStream = null;
+let callPollInFlight = false;
+let callAnswerAppliedId = "";
+let callStatusText = "";
+let callIceServers = [{ urls: "stun:stun.l.google.com:19302" }];
 let toastTimeout;
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 function apiHeaders(json = false) {
@@ -256,6 +265,216 @@ async function syncConnections() {
     if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
   } catch (error) {
     logTestError("Connections sync", error);
+  }
+}
+function callStatusLabel() {
+  if (callPeerConnection?.connectionState === "connected") return "Connected";
+  if (callPeerConnection?.connectionState === "connecting") return "Connecting…";
+  return callStatusText || "Connecting…";
+}
+function renderCallOverlay() {
+  if (!callRoot) return;
+  if (!callSession) {
+    callRoot.innerHTML = "";
+    return;
+  }
+  const incoming = callSession.status === "ringing" && callSession.recipientId === state.user.id && !callPeerConnection;
+  if (incoming) {
+    callRoot.innerHTML = `<section class="call-card incoming-call" role="dialog" aria-modal="true" aria-labelledby="call-title"><span class="call-eyebrow">Incoming ${callSession.mode} call</span><h2 id="call-title">${safe(callSession.callerName)} is calling</h2><p>Answer this call from your connected conversation?</p><div class="call-actions"><button class="button-secondary" type="button" data-call-decline>Decline</button><button class="button-primary" type="button" data-call-accept>Answer</button></div></section>`;
+    return;
+  }
+  const videoCall = callSession.mode === "video";
+  callRoot.innerHTML = `<section class="call-card active-call" role="dialog" aria-modal="true" aria-labelledby="call-title"><div class="call-header"><div><span class="call-eyebrow">${videoCall ? "Video" : "Audio"} call</span><h2 id="call-title">${safe(callSession.callerId === state.user.id ? callSession.recipientName || "Your connection" : callSession.callerName)}</h2></div><span class="call-status" aria-live="polite">${safe(callStatusLabel())}</span></div><div class="call-media ${videoCall ? "" : "audio-call"}"><video id="call-remote-video" autoplay playsinline ${videoCall ? "" : "hidden"}></video><audio id="call-remote-audio" autoplay></audio><div class="call-audio-placeholder" ${videoCall ? "hidden" : ""}>${safe((callSession.callerId === state.user.id ? callSession.recipientName : callSession.callerName) || "Connected")}</div><video id="call-local-video" autoplay muted playsinline ${videoCall ? "" : "hidden"}></video></div><div class="call-actions"><button class="button-secondary" type="button" data-call-mute aria-pressed="false">Mute</button>${videoCall ? `<button class="button-secondary" type="button" data-call-video aria-pressed="true">Turn camera off</button>` : ""}<button class="button-danger" type="button" data-call-end>End call</button></div></section>`;
+  const localVideo = callRoot.querySelector("#call-local-video");
+  const remoteVideo = callRoot.querySelector("#call-remote-video");
+  const remoteAudio = callRoot.querySelector("#call-remote-audio");
+  if (localVideo && callLocalStream) localVideo.srcObject = callLocalStream;
+  if (remoteVideo && callRemoteStream) remoteVideo.srcObject = callRemoteStream;
+  if (remoteAudio && callRemoteStream) remoteAudio.srcObject = callRemoteStream;
+}
+async function callApi(action, details) {
+  const response = await fetch("/api/calls", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ action, ...details })
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) throw new Error(payload.error || `Call request failed (HTTP ${response.status}).`);
+  return payload;
+}
+async function waitForIceGathering(peerConnection) {
+  if (peerConnection.iceGatheringState === "complete") return;
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      peerConnection.removeEventListener("icegatheringstatechange", onGatheringStateChange);
+      reject(new Error("Call setup timed out while connecting. Please try again."));
+    }, 15000);
+    function onGatheringStateChange() {
+      if (peerConnection.iceGatheringState !== "complete") return;
+      clearTimeout(timeout);
+      peerConnection.removeEventListener("icegatheringstatechange", onGatheringStateChange);
+      resolve();
+    }
+    peerConnection.addEventListener("icegatheringstatechange", onGatheringStateChange);
+  });
+}
+async function prepareCallPeerConnection(mode) {
+  if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+    throw new Error("Calls require a supported browser and a secure connection (HTTPS or localhost).");
+  }
+  const configResponse = await fetch("/api/calls", { headers: apiHeaders() });
+  const configPayload = await readJsonResponse(configResponse);
+  if (!configResponse.ok) throw new Error(configPayload.error || `Call setup failed (HTTP ${configResponse.status}).`);
+  if (Array.isArray(configPayload.iceServers) && configPayload.iceServers.length) callIceServers = configPayload.iceServers;
+  callLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === "video" });
+  callRemoteStream = new MediaStream();
+  callPeerConnection = new RTCPeerConnection({ iceServers: callIceServers });
+  for (const track of callLocalStream.getTracks()) callPeerConnection.addTrack(track, callLocalStream);
+  callPeerConnection.ontrack = event => {
+    for (const track of event.streams[0]?.getTracks() || [event.track]) {
+      if (!callRemoteStream.getTracks().some(existing => existing.id === track.id)) callRemoteStream.addTrack(track);
+    }
+    renderCallOverlay();
+  };
+  callPeerConnection.onconnectionstatechange = () => {
+    if (callPeerConnection?.connectionState === "connected") callStatusText = "Connected";
+    else if (callPeerConnection?.connectionState === "connecting") callStatusText = "Connecting…";
+    else if (callPeerConnection?.connectionState === "failed") callStatusText = "Connection failed";
+    renderCallOverlay();
+  };
+}
+async function startCall(requestId, mode, button) {
+  if (callSession || callPeerConnection) {
+    showToast("Finish your current call before starting another.");
+    return;
+  }
+  button.disabled = true;
+  callStatusText = "Calling…";
+  try {
+    await prepareCallPeerConnection(mode);
+    const offer = await callPeerConnection.createOffer();
+    await callPeerConnection.setLocalDescription(offer);
+    await waitForIceGathering(callPeerConnection);
+    const payload = await callApi("start", {
+      requestId,
+      mode,
+      offer: { type: callPeerConnection.localDescription.type, sdp: callPeerConnection.localDescription.sdp }
+    });
+    const connection = state.bookings.find(item => item.id === requestId);
+    const recipient = state.user.role === "Mentor"
+      ? state.users.find(user => user.id === connection?.requesterId)
+      : state.users.find(user => user.id === connection?.mentorId);
+    callSession = { ...payload.call, recipientName: payload.call.recipientName || recipient?.name || "Your connection" };
+    renderCallOverlay();
+  } catch (error) {
+    console.error("Unable to start call", error);
+    logTestError("Call start", error);
+    await clearCallState();
+    showToast(error.message || "The call could not be started.");
+  } finally {
+    button.disabled = false;
+  }
+}
+async function acceptCall(button) {
+  if (!callSession || callSession.recipientId !== state.user.id || callPeerConnection) return;
+  const call = callSession;
+  button.disabled = true;
+  callStatusText = "Joining…";
+  try {
+    await prepareCallPeerConnection(call.mode);
+    await callPeerConnection.setRemoteDescription(call.offer);
+    const answer = await callPeerConnection.createAnswer();
+    await callPeerConnection.setLocalDescription(answer);
+    await waitForIceGathering(callPeerConnection);
+    const payload = await callApi("answer", {
+      requestId: call.requestId,
+      callId: call.id,
+      answer: { type: callPeerConnection.localDescription.type, sdp: callPeerConnection.localDescription.sdp }
+    });
+    callSession = payload.call;
+    callStatusText = "Connecting…";
+    renderCallOverlay();
+  } catch (error) {
+    console.error("Unable to answer call", error);
+    logTestError("Call answer", error);
+    await clearCallState();
+    showToast(error.message || "The call could not be answered.");
+    try { await callApi("end", { requestId: call.requestId, callId: call.id }); } catch (endError) {
+      console.error("Unable to end unanswered call", endError);
+    }
+  }
+}
+async function clearCallState() {
+  if (callPeerConnection) {
+    callPeerConnection.ontrack = null;
+    callPeerConnection.onconnectionstatechange = null;
+    callPeerConnection.close();
+  }
+  for (const track of callLocalStream?.getTracks() || []) track.stop();
+  callSession = null;
+  callPeerConnection = null;
+  callLocalStream = null;
+  callRemoteStream = null;
+  callAnswerAppliedId = "";
+  callStatusText = "";
+  renderCallOverlay();
+}
+async function finishCall(notifyServer = true, showMessage = false) {
+  const endedCall = callSession;
+  if (!endedCall) return;
+  try {
+    if (notifyServer) await callApi("end", { requestId: endedCall.requestId, callId: endedCall.id });
+  } catch (error) {
+    console.error("Unable to end call", error);
+    logTestError("Call end", error);
+    if (notifyServer) showToast(error.message || "The call could not be ended.");
+  } finally {
+    await clearCallState();
+    if (showMessage) showToast("Call ended.");
+  }
+}
+async function syncCalls() {
+  if (!authToken || !state.user.id || callPollInFlight || !navigator.onLine || (!callSession && callPeerConnection)) return;
+  callPollInFlight = true;
+  try {
+    const response = await fetch("/api/calls", { headers: apiHeaders() });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || `Call sync failed (HTTP ${response.status}).`);
+    if (Array.isArray(payload.iceServers) && payload.iceServers.length) callIceServers = payload.iceServers;
+    const calls = Array.isArray(payload.calls) ? payload.calls : [];
+    if (callSession) {
+      const current = calls.find(call => call.id === callSession.id);
+      if (!current) {
+        await finishCall(false, true);
+      } else if (current.status === "ended") {
+        const endedByOther = current.endedBy && current.endedBy !== state.user.id;
+        await finishCall(false, endedByOther);
+      } else {
+        const changed = current.status !== callSession.status ||
+          current.updatedAt !== callSession.updatedAt ||
+          current.answer?.sdp !== callSession.answer?.sdp;
+        callSession = { ...callSession, ...current };
+        if (callSession.callerId === state.user.id && current.answer && callAnswerAppliedId !== current.id && callPeerConnection) {
+          await callPeerConnection.setRemoteDescription(current.answer);
+          callAnswerAppliedId = current.id;
+          callStatusText = "Connecting…";
+        }
+        if (changed) renderCallOverlay();
+      }
+    } else {
+      const incoming = calls.find(call => call.status === "ringing" && call.recipientId === state.user.id);
+      if (incoming) {
+        callSession = incoming;
+        state.activeConversationId = incoming.requestId;
+        callStatusText = "Incoming call";
+        renderCallOverlay();
+      }
+    }
+  } catch (error) {
+    console.error("Unable to sync calls", error);
+    logTestError("Call sync", error);
+  } finally {
+    callPollInFlight = false;
   }
 }
 async function syncConversation(requestId) {
@@ -647,7 +866,13 @@ function messageMarkup(message) {
   const attachmentMarkup = attachment
     ? `<a class="chat-attachment" href="data:${safe(attachment.type)};base64,${safe(attachment.data)}" download="${safe(attachment.name)}"><span aria-hidden="true">↧</span><span><strong>${safe(attachment.name)}</strong><small>${(Number(attachment.size) / (1024 * 1024)).toFixed(2)} MB</small></span></a>`
     : "";
-  return `<div class="chat-message ${message.senderId === state.user.id ? "mine" : ""}"><span>${safe(message.senderName)}</span>${message.text ? `<p>${safe(message.text)}</p>` : ""}${attachmentMarkup}<small>${new Date(message.createdAt).toLocaleString()}</small></div>`;
+  const isMine = message.senderId === state.user.id;
+  const connection = state.bookings.find(booking => booking.id === message.requestId);
+  const partnerId = connection?.mentorId === state.user.id
+    ? connection.requesterId || state.users.find(user => normalizeEmail(user.email) === normalizeEmail(connection.requesterEmail))?.id
+    : connection?.mentorId;
+  const seen = isMine && partnerId && Array.isArray(message.readBy) && message.readBy.includes(partnerId);
+  return `<div class="chat-message ${isMine ? "mine" : ""}"><span>${safe(message.senderName)}</span>${message.text ? `<p>${safe(message.text)}</p>` : ""}${attachmentMarkup}<small>${new Date(message.createdAt).toLocaleString()}</small>${seen ? `<small aria-label="Seen by recipient"> · Seen</small>` : ""}</div>`;
 }
 function renderMessages() {
   const conversations = state.bookings.filter(booking => booking.status !== "Cancelled");
@@ -656,7 +881,7 @@ function renderMessages() {
     ? state.users.find(user => user.id === active.requesterId) || { name: active.requesterName || "Student", id: active.requesterId }
     : state.users.find(user => user.id === active.mentorId) || { name: active.mentorName || "Mentor", id: active.mentorId });
   const convoPanel = active && partner
-    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2>${presenceMarkup(partner)}<p>${safe(active.topic)} · Connected</p></div><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div><div class="message-list" id="message-list">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><label class="message-attach-button" for="message-attachment" title="Attach a file" aria-label="Attach a file">＋</label><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
+    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2>${presenceMarkup(partner)}<p>${safe(active.topic)} · Connected</p></div><div class="message-header-actions"><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="audio" aria-label="Start audio call">Audio call</button><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="video" aria-label="Start video call">Video call</button><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div></div><div class="message-list" id="message-list">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><label class="message-attach-button" for="message-attachment" title="Attach a file" aria-label="Attach a file">＋</label><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
     : `<section class="panel"><div class="panel-body"><div class="empty-state"><strong>Select a connection to message.</strong>Start a mentor session request to connect with another member.</div></div></section>`;
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A conversation can start anywhere</div><h1>Messages</h1><p>Message students and mentors after you connect through a session request.</p></div></div><div class="messages-layout"><section class="panel conversation-panel"><div class="panel-heading"><h2>Connections</h2></div><div class="conversation-list">${conversations.length ? conversations.map(booking => {
     const name = state.user.role === "Mentor" ? booking.requesterName || "Student" : booking.mentorName || "Mentor";
@@ -742,6 +967,7 @@ async function switchRecentAccount(userId) {
     showToast("That recently used account is no longer available.");
     return;
   }
+  if (callSession) await finishCall(true, false);
   const previousToken = authToken;
   authToken = account.token;
   try {
@@ -792,6 +1018,26 @@ document.addEventListener("click", async event => {
   if (!event.target.closest(".notification-menu-wrap")) closeNotificationMenu();
   const target = event.target.closest("button");
   if (!target) return;
+  if (target.hasAttribute("data-call-mode")) { await startCall(target.dataset.call, target.dataset.callMode, target); return; }
+  if (target.hasAttribute("data-call-accept")) { await acceptCall(target); return; }
+  if (target.hasAttribute("data-call-decline")) { target.disabled = true; await finishCall(true, false); return; }
+  if (target.hasAttribute("data-call-end")) { target.disabled = true; await finishCall(true, true); return; }
+  if (target.hasAttribute("data-call-mute")) {
+    const audioTracks = callLocalStream?.getAudioTracks() || [];
+    const enableAudio = audioTracks.some(track => !track.enabled);
+    for (const track of audioTracks) track.enabled = enableAudio;
+    target.textContent = enableAudio ? "Mute" : "Unmute";
+    target.setAttribute("aria-pressed", String(!enableAudio));
+    return;
+  }
+  if (target.hasAttribute("data-call-video")) {
+    const videoTracks = callLocalStream?.getVideoTracks() || [];
+    const enableVideo = videoTracks.some(track => !track.enabled);
+    for (const track of videoTracks) track.enabled = enableVideo;
+    target.textContent = enableVideo ? "Turn camera off" : "Turn camera on";
+    target.setAttribute("aria-pressed", String(enableVideo));
+    return;
+  }
   if (target.hasAttribute("data-switch-account")) { await switchRecentAccount(target.dataset.switchAccount); return; }
   if (target.hasAttribute("data-remove-attachment")) {
     const form = target.closest("#message-form");
@@ -879,9 +1125,14 @@ document.addEventListener("click", async event => {
   if (target.hasAttribute("data-profile-edit")) { document.getElementById("profile-name").focus(); return; }
   if (target.id === "account-button") {
     const otherAccounts = recentAccounts.filter(account => account.id !== state.user.id);
-    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
+    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-secondary" data-change-password>Change password</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
+  }
+  if (target.hasAttribute("data-change-password")) {
+    openModal("Change password", "Confirm your current password, then choose a new one.", `<form id="change-password-form" class="modal-form"><div class="field"><label for="current-password">Current password</label><input id="current-password" name="currentPassword" type="password" maxlength="256" autocomplete="current-password" required></div><div class="field"><label for="new-password">New password</label><input id="new-password" name="newPassword" type="password" minlength="8" maxlength="256" autocomplete="new-password" required><small class="muted-copy">Use at least 8 characters.</small></div><div class="field"><label for="confirm-password">Confirm new password</label><input id="confirm-password" name="confirmPassword" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Update password</button></div></form>`);
+    return;
   }
   if (target.hasAttribute("data-logout")) {
+    if (callSession) await finishCall(true, false);
     await updatePresence(false);
     authToken = "";
     localStorage.removeItem("mm-token");
@@ -906,6 +1157,7 @@ document.addEventListener("click", async event => {
     const deletedUserId = state.user.id;
     const ownMember = state.users.find(user => user.email === email);
     target.disabled = true;
+    if (callSession) await finishCall(true, false);
     try {
       const response = await fetch("/api/account/delete", {
         method: "POST",
@@ -1110,6 +1362,39 @@ document.addEventListener("submit", async event => {
     rememberRecentAccount(state.user, authToken);
     persist(); render(); showToast("Your profile is looking good."); return;
   }
+  if (form.id === "change-password-form") {
+    const data = new FormData(form);
+    const currentPassword = String(data.get("currentPassword") || "");
+    const newPassword = String(data.get("newPassword") || "");
+    const confirmPassword = String(data.get("confirmPassword") || "");
+    if (newPassword !== confirmPassword) {
+      showToast("The new passwords don't match.");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      showToast("Choose a new password different from your current one.");
+      return;
+    }
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    try {
+      const response = await fetch("/api/account/password", {
+        method: "POST",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `Password change failed (HTTP ${response.status}).`);
+      closeModal();
+      showToast(payload.message || "Your password has been changed.");
+    } catch (error) {
+      console.error("Unable to change password", error);
+      logTestError("Password change", error);
+      showToast(error.message || "Your password could not be changed.");
+      submitButton.disabled = false;
+    }
+    return;
+  }
   if (form.id === "auth-form") {
     const data = new FormData(form);
     const email = normalizeEmail(data.get("email"));
@@ -1191,6 +1476,7 @@ if (normalizeEmail(savedUser.email) && authToken) {
   syncCommunityAccounts();
   syncConnections();
   syncNotifications();
+  syncCalls();
 } else {
   showAuth("login");
   syncCommunityAccounts();
@@ -1203,6 +1489,7 @@ window.addEventListener("online", () => updatePresence());
 setInterval(() => {
   syncCommunityAccounts();
   syncConnections();
+  syncCalls();
   if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
 }, 1800);
 setInterval(syncNotifications, 15000);

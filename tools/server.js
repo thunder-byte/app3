@@ -29,6 +29,7 @@ const dataDirectory = path.resolve(process.env.MENTORSHIPMATCH_DATA_DIR || verce
 const accountsPath = path.join(dataDirectory, "accounts.json");
 const requestsPath = path.join(dataDirectory, "chat-requests.json");
 const messagesPath = path.join(dataDirectory, "messages.json");
+const callsPath = path.join(dataDirectory, "calls.json");
 const reviewsPath = path.join(dataDirectory, "reviews.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
@@ -54,10 +55,12 @@ const allowedAttachmentTypes = new Set([
 let accounts = [];
 let chatRequests = [];
 let messages = [];
+let calls = [];
 let reviews = [];
 let writeQueue = Promise.resolve();
 let requestsWriteQueue = Promise.resolve();
 let messagesWriteQueue = Promise.resolve();
+let callsWriteQueue = Promise.resolve();
 let reviewsWriteQueue = Promise.resolve();
 const requestWindows = new Map();
 const hiddenDemoEmails = new Set(["test@gmail.com"]);
@@ -154,6 +157,72 @@ async function loadMessages() {
     if (error.code !== "ENOENT") throw error;
     messages = [];
   }
+}
+
+async function loadCalls() {
+  if (sql) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS mentorship_calls (
+        request_id TEXT PRIMARY KEY,
+        call JSONB NOT NULL
+      )
+    `;
+    const result = await sql`SELECT call FROM mentorship_calls`;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    calls = rows.map(row => typeof row.call === "string" ? JSON.parse(row.call) : row.call);
+    return;
+  }
+  await fs.mkdir(dataDirectory, { recursive: true });
+  try {
+    const storedData = JSON.parse(await fs.readFile(callsPath, "utf8"));
+    calls = Array.isArray(storedData) ? storedData : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    calls = [];
+  }
+}
+
+function saveCall(call) {
+  callsWriteQueue = callsWriteQueue.then(async () => {
+    if (sql) {
+      await sql`
+        INSERT INTO mentorship_calls (request_id, call)
+        VALUES (${call.requestId}, ${JSON.stringify(call)}::jsonb)
+        ON CONFLICT (request_id) DO UPDATE SET call = EXCLUDED.call
+      `;
+      return;
+    }
+    const temporaryPath = `${callsPath}.tmp`;
+    await fs.writeFile(temporaryPath, JSON.stringify(calls, null, 2), { mode: 0o600 });
+    await fs.rename(temporaryPath, callsPath);
+  });
+  return callsWriteQueue;
+}
+
+function saveCalls() {
+  if (sql) return Promise.resolve();
+  callsWriteQueue = callsWriteQueue.then(async () => {
+    const temporaryPath = `${callsPath}.tmp`;
+    await fs.writeFile(temporaryPath, JSON.stringify(calls, null, 2), { mode: 0o600 });
+    await fs.rename(temporaryPath, callsPath);
+  });
+  return callsWriteQueue;
+}
+
+async function findCall(requestId) {
+  if (!sql) return calls.find(call => call.requestId === requestId);
+  const result = await sql`
+    SELECT call FROM mentorship_calls
+    WHERE request_id = ${requestId}
+    LIMIT 1
+  `;
+  const rows = Array.isArray(result) ? result : (result.rows || []);
+  if (!rows.length) return undefined;
+  const call = typeof rows[0].call === "string" ? JSON.parse(rows[0].call) : rows[0].call;
+  const index = calls.findIndex(item => item.requestId === requestId);
+  if (index >= 0) calls[index] = call;
+  else calls.push(call);
+  return call;
 }
 
 async function loadReviews() {
@@ -704,6 +773,36 @@ async function handleRequest(request, response) {
     sendJson(response, 200, { user: publicAccount(account) });
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/account/password") {
+    if (!allowRequest(request, response, "password-change", 5, 15 * 60 * 1000)) return;
+    const body = await readJson(request);
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to change your password." });
+      return;
+    }
+    const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+    const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+    if (!currentPassword || currentPassword.length > 256 || newPassword.length < 8 || newPassword.length > 256) {
+      sendJson(response, 400, { error: "Enter your current password and a new password with at least 8 characters." });
+      return;
+    }
+    const currentRecord = await passwordRecord(currentPassword, Buffer.from(authenticated.passwordSalt, "hex"));
+    if (!safeEqualHex(currentRecord.passwordHash, authenticated.passwordHash)) {
+      sendJson(response, 403, { error: "Your current password is incorrect." });
+      return;
+    }
+    if (currentPassword === newPassword) {
+      sendJson(response, 400, { error: "Choose a new password different from your current one." });
+      return;
+    }
+    const newRecord = await passwordRecord(newPassword);
+    authenticated.passwordSalt = newRecord.passwordSalt;
+    authenticated.passwordHash = newRecord.passwordHash;
+    await saveAccounts();
+    sendJson(response, 200, { message: "Your password has been changed." });
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/account/delete") {
     const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
@@ -864,6 +963,150 @@ async function handleRequest(request, response) {
     sendJson(response, 200, { request: connection });
     return;
   }
+  if ((request.method === "GET" || request.method === "POST") && url.pathname === "/api/calls") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to use calls." });
+      return;
+    }
+
+    if (request.method === "GET") {
+      let accountCalls;
+      if (sql) {
+        const result = await sql`
+          SELECT call FROM mentorship_calls
+          WHERE call->>'callerId' = ${authenticated.id}
+             OR call->>'recipientId' = ${authenticated.id}
+        `;
+        const rows = Array.isArray(result) ? result : (result.rows || []);
+        accountCalls = rows.map(row => typeof row.call === "string" ? JSON.parse(row.call) : row.call);
+        for (const call of accountCalls) {
+          const index = calls.findIndex(item => item.requestId === call.requestId);
+          if (index >= 0) calls[index] = call;
+          else calls.push(call);
+        }
+      } else {
+        accountCalls = calls.filter(call => call.callerId === authenticated.id || call.recipientId === authenticated.id);
+      }
+      const now = Date.now();
+      const activeCalls = [];
+      for (const call of accountCalls) {
+        const age = now - Date.parse(call.updatedAt);
+        if (call.status === "ringing" && age > 90 * 1000) {
+          call.status = "ended";
+          call.updatedAt = new Date(now).toISOString();
+          await saveCall(call);
+        } else if (call.status === "active" && age > 4 * 60 * 60 * 1000) {
+          call.status = "ended";
+          call.updatedAt = new Date(now).toISOString();
+          await saveCall(call);
+        }
+        if (call.status === "ended" && age > 5 * 60 * 1000) {
+          calls = calls.filter(item => item.requestId !== call.requestId);
+          if (sql) await sql`DELETE FROM mentorship_calls WHERE request_id = ${call.requestId}`;
+          continue;
+        }
+        activeCalls.push(call);
+      }
+      if (!sql) {
+        const visibleCalls = new Set(activeCalls.map(call => call.requestId));
+        calls = calls.filter(call => call.status !== "ended" || visibleCalls.has(call.requestId));
+        await saveCalls();
+      }
+      const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+      const turnUrls = String(process.env.TURN_SERVER_URL || "").split(",").map(value => value.trim()).filter(Boolean);
+      if (turnUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+        iceServers.push({
+          urls: turnUrls,
+          username: process.env.TURN_USERNAME,
+          credential: process.env.TURN_CREDENTIAL
+        });
+      }
+      sendJson(response, 200, { calls: activeCalls, iceServers });
+      return;
+    }
+
+    const body = await readJson(request);
+    const action = typeof body.action === "string" ? body.action : "";
+    if (action === "start" && !allowRequest(request, response, "call-start", 10, 10 * 60 * 1000)) return;
+    const requestId = typeof body.requestId === "string" ? body.requestId : "";
+    const connection = await findChatRequest(requestId);
+    const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
+    if (!connection || connection.status === "Cancelled" ||
+      (authenticated.id !== connection.mentorId && authenticated.id !== requesterId)) {
+      sendJson(response, 403, { error: "Calls are available only to members in this connection." });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    if (action === "start") {
+      if (!["audio", "video"].includes(body.mode) ||
+        !body.offer || body.offer.type !== "offer" ||
+        typeof body.offer.sdp !== "string" || body.offer.sdp.length > 200000) {
+        sendJson(response, 400, { error: "A valid audio or video call offer is required." });
+        return;
+      }
+      const currentCall = await findCall(requestId);
+      if (currentCall && ["ringing", "active"].includes(currentCall.status)) {
+        sendJson(response, 409, { error: "There is already a call in progress for this connection." });
+        return;
+      }
+      const call = {
+        id: crypto.randomUUID(),
+        requestId,
+        callerId: authenticated.id,
+        callerName: authenticated.name,
+        recipientId: authenticated.id === connection.mentorId ? requesterId : connection.mentorId,
+        recipientName: accounts.find(account => account.id === (authenticated.id === connection.mentorId ? requesterId : connection.mentorId))?.name || "Your connection",
+        mode: body.mode,
+        status: "ringing",
+        offer: { type: "offer", sdp: body.offer.sdp },
+        answer: null,
+        createdAt: now,
+        updatedAt: now
+      };
+      const index = calls.findIndex(item => item.requestId === requestId);
+      if (index >= 0) calls[index] = call;
+      else calls.push(call);
+      await saveCall(call);
+      sendJson(response, 201, { call });
+      return;
+    }
+
+    const call = await findCall(requestId);
+    if (!call || call.id !== body.callId || !["ringing", "active"].includes(call.status)) {
+      sendJson(response, 404, { error: "This call is no longer available." });
+      return;
+    }
+    if (action === "answer") {
+      if (call.recipientId !== authenticated.id || call.status !== "ringing" ||
+        !body.answer || body.answer.type !== "answer" ||
+        typeof body.answer.sdp !== "string" || body.answer.sdp.length > 200000) {
+        sendJson(response, 403, { error: "Only the invited participant can answer this call." });
+        return;
+      }
+      call.answer = { type: "answer", sdp: body.answer.sdp };
+      call.status = "active";
+      call.updatedAt = now;
+      await saveCall(call);
+      sendJson(response, 200, { call });
+      return;
+    }
+    if (action === "end") {
+      if (authenticated.id !== call.callerId && authenticated.id !== call.recipientId) {
+        sendJson(response, 403, { error: "Only a participant can end this call." });
+        return;
+      }
+      call.status = "ended";
+      call.endedBy = authenticated.id;
+      call.updatedAt = now;
+      await saveCall(call);
+      sendJson(response, 200, { call });
+      return;
+    }
+    sendJson(response, 400, { error: "Choose a valid call action." });
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/messages") {
     const requestId = url.searchParams.get("requestId") || "";
     const authenticated = await authenticatedAccount(request);
@@ -890,6 +1133,27 @@ async function handleRequest(request, response) {
     } else {
       conversation = messages.filter(message => message.requestId === requestId);
     }
+    let updatedMessages = false;
+    for (const message of conversation) {
+      if (message.senderId === userId) continue;
+      const readBy = Array.isArray(message.readBy)
+        ? message.readBy.filter(readerId => typeof readerId === "string")
+        : [];
+      if (!readBy.includes(userId)) {
+        message.readBy = [...readBy, userId];
+        updatedMessages = true;
+        if (sql) {
+          await sql`
+            UPDATE mentorship_messages
+            SET message = ${JSON.stringify(message)}::jsonb
+            WHERE id = ${message.id} AND request_id = ${requestId}
+          `;
+        }
+      }
+      const cachedMessage = messages.find(cached => cached.id === message.id);
+      if (cachedMessage) cachedMessage.readBy = message.readBy || readBy;
+    }
+    if (!sql && updatedMessages) await saveMessages();
     conversation = conversation
       .map(({ senderEmail, ...message }) => message)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -1050,7 +1314,7 @@ function requestErrorHandler(request, response) {
 }
 
 function ensureAccountsLoaded() {
-  if (!accountsReady) accountsReady = Promise.all([loadAccounts(), loadChatRequests(), loadMessages(), loadReviews()]);
+  if (!accountsReady) accountsReady = Promise.all([loadAccounts(), loadChatRequests(), loadMessages(), loadCalls(), loadReviews()]);
   return accountsReady;
 }
 
