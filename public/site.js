@@ -1,5 +1,37 @@
 const legacyDemoIds = new Set(["maya", "jordan", "amara", "diego", "priya", "alex", "sam", "nina", "student"]);
 const legacyDemoEmails = new Set(["maya.chen@example.com", "jordan.lee@example.com", "amara.okafor@example.com", "diego.r@example.com", "taylor.kim@example.com", "jamie.davis@example.com", "test@gmail.com"]);
+const allowedChatAttachmentTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "text/csv",
+  "text/plain"
+]);
+const chatAttachmentExtensions = {
+  csv: "text/csv",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  gif: "image/gif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  pdf: "application/pdf",
+  png: "image/png",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  txt: "text/plain",
+  webp: "image/webp",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+};
+const maxChatAttachmentBytes = 3 * 1024 * 1024;
 function logTestError(source, error) {
   console.error(`${source}:`, error);
 }
@@ -208,7 +240,7 @@ async function syncConversation(requestId) {
         const list = document.getElementById("message-list");
         if (list) {
           list.innerHTML = state.messages[requestId].length
-            ? state.messages[requestId].map(message => `<div class="chat-message ${message.senderId === state.user.id ? "mine" : ""}"><span>${safe(message.senderName)}</span><p>${safe(message.text)}</p><small>${new Date(message.createdAt).toLocaleString()}</small></div>`).join("")
+            ? state.messages[requestId].map(messageMarkup).join("")
             : `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`;
           list.scrollTop = list.scrollHeight;
         }
@@ -406,6 +438,34 @@ async function readJsonResponse(response) {
   try { return JSON.parse(text); }
   catch { throw new Error(`Server returned invalid JSON (HTTP ${response.status}).`); }
 }
+function chatAttachmentType(file) {
+  const declaredType = file.type.toLocaleLowerCase();
+  if (allowedChatAttachmentTypes.has(declaredType)) return declaredType;
+  const extension = file.name.split(".").pop().toLocaleLowerCase();
+  return chatAttachmentExtensions[extension] || "";
+}
+function readChatAttachment(file) {
+  if (!file || !chatAttachmentType(file)) {
+    return Promise.reject(new Error("Choose a PDF, Office document, image, CSV, or text file."));
+  }
+  if (file.size === 0 || file.size > maxChatAttachmentBytes) {
+    return Promise.reject(new Error("Choose a file up to 3 MB."));
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("The selected file could not be read."));
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const data = result.slice(result.indexOf(",") + 1);
+      if (!data) {
+        reject(new Error("The selected file could not be read."));
+        return;
+      }
+      resolve({ name: file.name, type: chatAttachmentType(file), size: file.size, data });
+    };
+    reader.readAsDataURL(file);
+  });
+}
 async function hashPassword(password) {
   const bytes = new TextEncoder().encode(password);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -511,6 +571,13 @@ function renderMemberProfile() {
     </div><div class="profile-actions">${connection ? `<button class="button-secondary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request another chat</button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Reviews</h2><p>Feedback shared by people who connected with ${safe(member.name.split(" ")[0])}.</p></div></div><div class="panel-body">${reviewListMarkup(member.id)}</div></section></div></div>`;
 }
+function messageMarkup(message) {
+  const attachment = message.attachment;
+  const attachmentMarkup = attachment
+    ? `<a class="chat-attachment" href="data:${safe(attachment.type)};base64,${safe(attachment.data)}" download="${safe(attachment.name)}"><span aria-hidden="true">↧</span><span><strong>${safe(attachment.name)}</strong><small>${(Number(attachment.size) / (1024 * 1024)).toFixed(2)} MB</small></span></a>`
+    : "";
+  return `<div class="chat-message ${message.senderId === state.user.id ? "mine" : ""}"><span>${safe(message.senderName)}</span>${message.text ? `<p>${safe(message.text)}</p>` : ""}${attachmentMarkup}<small>${new Date(message.createdAt).toLocaleString()}</small></div>`;
+}
 function renderMessages() {
   const conversations = state.bookings.filter(booking => booking.status !== "Cancelled");
   const active = conversations.find(booking => booking.id === state.activeConversationId);
@@ -518,7 +585,7 @@ function renderMessages() {
     ? state.users.find(user => user.id === active.requesterId) || { name: active.requesterName || "Student", id: active.requesterId }
     : state.users.find(user => user.id === active.mentorId) || { name: active.mentorName || "Mentor", id: active.mentorId });
   const convoPanel = active && partner
-    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2><p>${safe(active.topic)} · Connected</p></div><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div><div class="message-list" id="message-list">${(state.messages[active.id] || []).map(message => `<div class="chat-message ${message.senderId === state.user.id ? "mine" : ""}"><span>${safe(message.senderName)}</span><p>${safe(message.text)}</p><small>${new Date(message.createdAt).toLocaleString()}</small></div>`).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" required placeholder="Write a message..." aria-label="Message"><button class="button-primary" type="submit">Send</button></form></section>`
+    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2><p>${safe(active.topic)} · Connected</p></div><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div><div class="message-list" id="message-list">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><label class="message-attach-button" for="message-attachment" title="Attach a file" aria-label="Attach a file">＋</label><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt,application/pdf,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/gif,image/jpeg,image/png,image/webp,text/csv,text/plain"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
     : `<section class="panel"><div class="panel-body"><div class="empty-state"><strong>Select a connection to message.</strong>Start a mentor session request to connect with another member.</div></div></section>`;
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A conversation can start anywhere</div><h1>Messages</h1><p>Message students and mentors after you connect through a session request.</p></div></div><div class="messages-layout"><section class="panel conversation-panel"><div class="panel-heading"><h2>Connections</h2></div><div class="conversation-list">${conversations.length ? conversations.map(booking => {
     const name = state.user.role === "Mentor" ? booking.requesterName || "Student" : booking.mentorName || "Mentor";
@@ -654,6 +721,14 @@ document.addEventListener("click", async event => {
   const target = event.target.closest("button");
   if (!target) return;
   if (target.hasAttribute("data-switch-account")) { await switchRecentAccount(target.dataset.switchAccount); return; }
+  if (target.hasAttribute("data-remove-attachment")) {
+    const form = target.closest("#message-form");
+    form.querySelector("#message-attachment").value = "";
+    form.querySelector("#message-attachment-name").textContent = "";
+    form.querySelector("#message-attachment-name").hidden = true;
+    target.hidden = true;
+    return;
+  }
   if (target.id === "notifications") { toggleNotificationMenu(); return; }
   if (target.hasAttribute("data-notification-message")) {
     closeNotificationMenu();
@@ -790,6 +865,21 @@ document.addEventListener("input", event => {
   if (event.target.id === "mentor-search") { state.query = event.target.value; const cursor = event.target.selectionStart; render(); const input = document.getElementById("mentor-search"); input.focus(); input.setSelectionRange(cursor, cursor); }
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "message-attachment" && event.target.files?.[0]) {
+    const file = event.target.files[0];
+    if (!chatAttachmentType(file) || file.size === 0 || file.size > maxChatAttachmentBytes) {
+      showToast(file.size > maxChatAttachmentBytes
+        ? "Choose a file up to 3 MB."
+        : "Choose a PDF, Office document, image, CSV, or text file.");
+      event.target.value = "";
+      return;
+    }
+    const form = event.target.closest("#message-form");
+    const fileName = form.querySelector("#message-attachment-name");
+    fileName.textContent = file.name;
+    fileName.hidden = false;
+    form.querySelector("[data-remove-attachment]").hidden = false;
+  }
   if (event.target.id === "profile-picture" && event.target.files?.[0]) {
     const selectionVersion = ++profileImageSelectionVersion;
     profileImageTask = resizeProfileImage(event.target.files[0]).then(image => {
@@ -866,14 +956,19 @@ document.addEventListener("submit", async event => {
   if (form.id === "message-form") {
     const data = new FormData(form);
     const text = String(data.get("text") || "").trim();
-    if (!text) return;
+    const file = form.querySelector("#message-attachment").files?.[0];
+    if (!text && !file) {
+      showToast("Write a message or attach a file before sending.");
+      return;
+    }
     const sendButton = form.querySelector('button[type="submit"]');
     sendButton.disabled = true;
     try {
+      const attachment = file ? await readChatAttachment(file) : undefined;
       const response = await fetch("/api/messages", {
         method: "POST",
         headers: apiHeaders(true),
-        body: JSON.stringify({ requestId: form.dataset.request, senderId: state.user.id, text })
+        body: JSON.stringify({ requestId: form.dataset.request, senderId: state.user.id, text, ...(attachment ? { attachment } : {}) })
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `Message send failed (HTTP ${response.status}).`);

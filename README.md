@@ -8,7 +8,7 @@
 
 Accounts are stored in `data/accounts.json` on local servers or in the `mentorship_accounts` Neon table on Vercel. Passwords are stored as salted PBKDF2 hashes. Email verification is not used.
 
-Signed-in students and mentors can browse community profiles, including each member's school, year, interests, and goals. Members can upload a profile picture from **My profile**; images are resized in the browser and shared on community profiles. Students can request multiple sessions with the same mentor and exchange messages after connecting. Mentor profiles show reviews and their average rating. Local deployments store messages and reviews in `data/messages.json` and `data/reviews.json`; Neon deployments use `mentorship_messages` and `mentorship_reviews`.
+Signed-in students and mentors can browse community profiles, including each member's school, year, interests, and goals. Members can upload a profile picture from **My profile**; images are resized in the browser and shared on community profiles. Students can request multiple sessions with the same mentor and exchange messages and files after connecting. Chat supports PDF, Office documents, images, CSV, and plain-text files up to 3 MB. Mentor profiles show reviews and their average rating. Local deployments store messages and reviews in `data/messages.json` and `data/reviews.json`; Neon deployments use `mentorship_messages` and `mentorship_reviews`.
 
 After deploying this update, existing users may need to sign in again to start a secure session for profile and messaging features.
 

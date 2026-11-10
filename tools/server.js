@@ -33,6 +33,23 @@ const reviewsPath = path.join(dataDirectory, "reviews.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
 const maxRequestBytes = 256 * 1024;
+const maxMessageRequestBytes = 4.25 * 1024 * 1024;
+const maxAttachmentBytes = 3 * 1024 * 1024;
+const allowedAttachmentTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "text/csv",
+  "text/plain"
+]);
 let accounts = [];
 let chatRequests = [];
 let messages = [];
@@ -362,12 +379,12 @@ function allowRequest(request, response, scope, limit, windowMs) {
   return true;
 }
 
-function readJson(request) {
+function readJson(request, maxBytes = maxRequestBytes) {
   return new Promise((resolve, reject) => {
     let body = "";
     request.on("data", chunk => {
       body += chunk;
-      if (Buffer.byteLength(body) > maxRequestBytes) {
+      if (Buffer.byteLength(body) > maxBytes) {
         reject(Object.assign(new Error("Request body is too large."), { status: 413 }));
         request.destroy();
       }
@@ -783,7 +800,7 @@ async function handleRequest(request, response) {
           requestId: connection.id,
           senderId: message.senderId,
           senderName: message.senderName,
-          text: message.text,
+          text: message.text || (message.attachment ? "Shared a file" : ""),
           createdAt: message.createdAt
         });
       }
@@ -852,7 +869,7 @@ async function handleRequest(request, response) {
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/messages") {
-    const body = await readJson(request);
+    const body = await readJson(request, maxMessageRequestBytes);
     const requestId = typeof body.requestId === "string" ? body.requestId : "";
     const authenticated = await authenticatedAccount(request);
     if (!authenticated) {
@@ -864,7 +881,31 @@ async function handleRequest(request, response) {
     const connection = await findChatRequest(requestId);
     const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
     const sender = authenticated.id === senderId ? authenticated : null;
-    if (!connection || connection.status === "Cancelled" || !sender || (senderId !== connection.mentorId && senderId !== requesterId) || !text || text.length > 2000) {
+    let attachment;
+    if (body.attachment !== undefined) {
+      const suppliedAttachment = body.attachment;
+      if (!suppliedAttachment || typeof suppliedAttachment !== "object" || Array.isArray(suppliedAttachment) ||
+        typeof suppliedAttachment.name !== "string" || typeof suppliedAttachment.type !== "string" ||
+        typeof suppliedAttachment.data !== "string" || !allowedAttachmentTypes.has(suppliedAttachment.type) ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(suppliedAttachment.data)) {
+        sendJson(response, 400, { error: "Choose a supported file to share." });
+        return;
+      }
+      const fileData = Buffer.from(suppliedAttachment.data, "base64");
+      const fileName = suppliedAttachment.name.trim().replace(/[\u0000-\u001f\u007f/\\]/g, "_").slice(0, 255);
+      if (!fileName || fileData.length === 0 || fileData.length > maxAttachmentBytes ||
+        fileData.toString("base64") !== suppliedAttachment.data) {
+        sendJson(response, 400, { error: "Files must be up to 3 MB and have a valid file name." });
+        return;
+      }
+      attachment = {
+        name: fileName,
+        type: suppliedAttachment.type,
+        size: fileData.length,
+        data: suppliedAttachment.data
+      };
+    }
+    if (!connection || connection.status === "Cancelled" || !sender || (senderId !== connection.mentorId && senderId !== requesterId) || (!text && !attachment) || text.length > 2000) {
       sendJson(response, 400, { error: "A valid connection and message are required." });
       return;
     }
@@ -874,6 +915,7 @@ async function handleRequest(request, response) {
       senderId,
       senderName: sender.name,
       text,
+      ...(attachment ? { attachment } : {}),
       createdAt: new Date().toISOString()
     };
     if (sql) {
