@@ -95,3 +95,35 @@ h1, h2, h3, p { margin-top: 0; }h1,h2,h3 { font-family: var(--serif); letter-spa
 #call-root:not(:empty) { position: fixed; inset: 0; z-index: 59; display: grid; place-items: center; background: #141b1680; }
 .call-card { position: fixed; z-index: 60; left: 50%; top: 50%; width: min(620px, calc(100vw - 28px)); transform: translate(-50%, -50%); padding: 20px; border: 1px solid #dfe3d8; border-radius: 14px; background: #fff; box-shadow: 0 22px 80px #10161055; color: var(--ink); }.incoming-call { width: min(390px, calc(100vw - 28px)); text-align: center; padding: 28px; }.call-eyebrow { color: #748567; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; }.call-card h2 { margin: 5px 0; font-size: 18px; }.call-card p { color: var(--muted); font-size: 12px; }.call-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }.call-status { color: #72845f; font-size: 11px; }.call-media { position: relative; display: grid; place-items: center; min-height: 280px; margin: 15px 0; overflow: hidden; border-radius: 10px; background: #202820; }.call-media > video#call-remote-video { width: 100%; max-height: min(60vh, 480px); object-fit: contain; }.call-media > video#call-local-video { position: absolute; right: 12px; bottom: 12px; width: min(27%, 150px); max-height: 150px; border: 2px solid #fff; border-radius: 8px; object-fit: cover; background: #384138; }.call-media > audio { display: none; }.call-media.audio-call { min-height: 180px; background: #f0f3ec; }.call-audio-placeholder { color: #40573e; font-size: 16px; font-weight: 700; }.call-actions { display: flex; justify-content: center; gap: 9px; margin-top: 16px; }.call-actions button { min-width: 86px; }.call-actions .button-danger { background: #a9433e; color: white; border: 1px solid #a9433e; }
 @media (max-width: 760px) { .message-header-actions { justify-content: flex-end; }.call-card { padding: 14px; }.call-media { min-height: 220px; }.call-media.audio-call { min-height: 150px; }.call-media > video#call-local-video { width: 32%; } }
+.admin-panel { margin-bottom: 16px; }
+.admin-account-list { display: grid; }
+.admin-account-row { display: grid; grid-template-columns: minmax(150px,1.4fr) minmax(80px,.5fr) minmax(110px,.7fr) minmax(180px,1fr); align-items: center; gap: 12px; padding: 13px 18px; border-bottom: 1px solid #f0f0ec; }
+.admin-account-row:last-child { border-bottom: 0; }
+.admin-account-person { display: grid; gap: 4px; min-width: 0; }
+.admin-account-person strong { font-size: 11px; overflow-wrap: anywhere; }
+.admin-account-person span,.admin-account-actions small { color: #858980; font-size: 10px; overflow-wrap: anywhere; }
+.admin-account-role { color: #656a60; font-size: 10px; }
+.admin-status { justify-self: start; padding: 5px 8px; border-radius: 20px; background: #f1f1ef; color: #73776f; font-size: 9px; white-space: nowrap; }
+.admin-status.active { background: #f2f5ed; color: #69805a; }
+.admin-status.suspended { background: #fff4f0; color: #a9523c; }
+.admin-status.pending { background: #fff6e8; color: #a67b3b; }
+.admin-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.admin-account-actions small { flex-basis: 100%; }
+.admin-polls .panel-body p { margin: 0; }
+@media (max-width: 760px) {
+  .admin-account-row { grid-template-columns: 1fr auto; gap: 9px; padding: 13px; }
+  .admin-account-person { grid-column: 1 / -1; }
+  .admin-account-actions { grid-column: 1 / -1; }
+}
+.poll-fieldset { display: grid; gap: 9px; margin: 0; padding: 0; border: 0; }
+.poll-fieldset legend { margin-bottom: 4px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.poll-option { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; color: #555b52; font-size: 12px; cursor: pointer; }
+.poll-option input { accent-color: var(--green); }
+.poll-option:focus-within { border-color: #98ad89; background: #f5f8f2; }
+.poll-total { color: #72796c; font-size: 10px; white-space: nowrap; }
+.poll-result-list { display: grid; gap: 15px; }
+.poll-result-row { display: grid; gap: 6px; }
+.poll-result-row > div:first-child { display: flex; justify-content: space-between; gap: 12px; color: #555b52; font-size: 11px; }
+.poll-result-row strong { color: #73796e; font-size: 10px; white-space: nowrap; }
+.poll-result-track { height: 7px; overflow: hidden; border-radius: 6px; background: #f0f1ec; }
+.poll-result-track span { display: block; height: 100%; border-radius: inherit; background: #85a276; }

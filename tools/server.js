@@ -31,12 +31,20 @@ const requestsPath = path.join(dataDirectory, "chat-requests.json");
 const messagesPath = path.join(dataDirectory, "messages.json");
 const callsPath = path.join(dataDirectory, "calls.json");
 const reviewsPath = path.join(dataDirectory, "reviews.json");
+const pollResponsesPath = path.join(dataDirectory, "poll-responses.json");
+const appReviewsPath = path.join(dataDirectory, "app-reviews.json");
 const port = Number(process.env.PORT || 3000);
 const appOrigin = (process.env.APP_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`)).replace(/\/$/, "");
 const maxRequestBytes = 256 * 1024;
 const presenceOnlineWindowMs = 60 * 1000;
 const maxMessageRequestBytes = 4.25 * 1024 * 1024;
 const maxAttachmentBytes = 3 * 1024 * 1024;
+const adminEmails = new Set(["keithwilliams0127@gmail.com"]);
+const experiencePoll = {
+  id: "mentorship-experience-v1",
+  question: "How is your MentorshipMatch experience so far?",
+  options: ["Great", "Good", "Okay", "Needs improvement"]
+};
 const allowedAttachmentTypes = new Set([
   "application/pdf",
   "application/msword",
@@ -57,11 +65,15 @@ let chatRequests = [];
 let messages = [];
 let calls = [];
 let reviews = [];
+let pollResponses = [];
+let appReviews = [];
 let writeQueue = Promise.resolve();
 let requestsWriteQueue = Promise.resolve();
 let messagesWriteQueue = Promise.resolve();
 let callsWriteQueue = Promise.resolve();
 let reviewsWriteQueue = Promise.resolve();
+let pollResponsesWriteQueue = Promise.resolve();
+let appReviewsWriteQueue = Promise.resolve();
 const requestWindows = new Map();
 const hiddenDemoEmails = new Set(["test@gmail.com"]);
 
@@ -249,6 +261,69 @@ async function loadReviews() {
   }
 }
 
+async function loadPollResponses() {
+  if (sql) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS mentorship_poll_responses (
+        poll_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        choice TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (poll_id, account_id)
+      )
+    `;
+    const result = await sql`SELECT poll_id, account_id, choice, created_at FROM mentorship_poll_responses`;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    pollResponses = rows.map(row => ({
+      pollId: row.poll_id,
+      accountId: row.account_id,
+      choice: row.choice,
+      createdAt: row.created_at
+    }));
+    return;
+  }
+  await fs.mkdir(dataDirectory, { recursive: true });
+  try {
+    const storedData = JSON.parse(await fs.readFile(pollResponsesPath, "utf8"));
+    pollResponses = Array.isArray(storedData) ? storedData : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    pollResponses = [];
+  }
+}
+
+async function loadAppReviews() {
+  if (sql) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS mentorship_app_reviews (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL UNIQUE,
+        rating INTEGER NOT NULL,
+        comment TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    const result = await sql`SELECT id, account_id, rating, comment, created_at FROM mentorship_app_reviews`;
+    const rows = Array.isArray(result) ? result : (result.rows || []);
+    appReviews = rows.map(row => ({
+      id: row.id,
+      accountId: row.account_id,
+      rating: Number(row.rating),
+      comment: row.comment,
+      createdAt: row.created_at
+    }));
+    return;
+  }
+  await fs.mkdir(dataDirectory, { recursive: true });
+  try {
+    const storedData = JSON.parse(await fs.readFile(appReviewsPath, "utf8"));
+    appReviews = Array.isArray(storedData) ? storedData : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    appReviews = [];
+  }
+}
+
 function saveAccounts() {
   writeQueue = writeQueue.then(async () => {
     if (sql) {
@@ -387,6 +462,26 @@ function saveReviews() {
   return reviewsWriteQueue;
 }
 
+function savePollResponses() {
+  if (sql) return Promise.resolve();
+  pollResponsesWriteQueue = pollResponsesWriteQueue.then(async () => {
+    const temporaryPath = `${pollResponsesPath}.tmp`;
+    await fs.writeFile(temporaryPath, JSON.stringify(pollResponses, null, 2), { mode: 0o600 });
+    await fs.rename(temporaryPath, pollResponsesPath);
+  });
+  return pollResponsesWriteQueue;
+}
+
+function saveAppReviews() {
+  appReviewsWriteQueue = appReviewsWriteQueue.then(async () => {
+    if (sql) return;
+    const temporaryPath = `${appReviewsPath}.tmp`;
+    await fs.writeFile(temporaryPath, JSON.stringify(appReviews, null, 2), { mode: 0o600 });
+    await fs.rename(temporaryPath, appReviewsPath);
+  });
+  return appReviewsWriteQueue;
+}
+
 async function permanentlyDeleteAccount(account) {
   const accountEmail = String(account.email || "").trim().toLowerCase();
   const accountRequests = chatRequests.filter(request =>
@@ -406,6 +501,8 @@ async function permanentlyDeleteAccount(account) {
   chatRequests = chatRequests.filter(request => !accountRequests.includes(request));
   messages = messages.filter(message => !accountMessages.includes(message));
   reviews = reviews.filter(review => !accountReviews.includes(review));
+  pollResponses = pollResponses.filter(response => response.accountId !== account.id);
+  appReviews = appReviews.filter(review => review.accountId !== account.id);
 
   if (sql) {
     for (const request of accountRequests) {
@@ -417,9 +514,11 @@ async function permanentlyDeleteAccount(account) {
     for (const review of accountReviews) {
       await sql`DELETE FROM mentorship_reviews WHERE id = ${review.id}`;
     }
+    await sql`DELETE FROM mentorship_poll_responses WHERE account_id = ${account.id}`;
+    await sql`DELETE FROM mentorship_app_reviews WHERE account_id = ${account.id}`;
   }
 
-  await Promise.all([saveAccounts(), saveChatRequests(), saveMessages(), saveReviews()]);
+  await Promise.all([saveAccounts(), saveChatRequests(), saveMessages(), saveReviews(), savePollResponses(), saveAppReviews()]);
 }
 
 async function expirePendingDeletions() {
@@ -678,7 +777,15 @@ async function handleLogin(request, response) {
   account.sessionExpiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
   account.lastSeenAt = new Date().toISOString();
   await saveAccounts();
-  sendJson(response, 200, { user: { ...publicAccount(account), email: account.email }, token, restored });
+  sendJson(response, 200, {
+    user: {
+      ...publicAccount(account),
+      email: account.email,
+      isAdmin: adminEmails.has(String(account.email || "").trim().toLowerCase())
+    },
+    token,
+    restored
+  });
 }
 
 
@@ -741,6 +848,299 @@ async function handleRequest(request, response) {
       .filter(account => account.status === "Active" && !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()))
       .map(publicAccount)
     sendJson(response, 200, { users });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/poll") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in to view the poll." });
+      return;
+    }
+    let hasResponded;
+    if (sql) {
+      const result = await sql`
+        SELECT account_id FROM mentorship_poll_responses
+        WHERE poll_id = ${experiencePoll.id} AND account_id = ${authenticated.id}
+        LIMIT 1
+      `;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      hasResponded = rows.length > 0;
+    } else {
+      hasResponded = pollResponses.some(response =>
+        response.pollId === experiencePoll.id && response.accountId === authenticated.id
+      );
+    }
+    sendJson(response, 200, { poll: experiencePoll, hasResponded });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/poll") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in to submit a poll response." });
+      return;
+    }
+    const body = await readJson(request);
+    const choice = body && typeof body === "object" && !Array.isArray(body) && typeof body.choice === "string"
+      ? body.choice
+      : "";
+    if (!experiencePoll.options.includes(choice)) {
+      sendJson(response, 400, { error: "Choose one of the poll options." });
+      return;
+    }
+    if (sql) {
+      const result = await sql`
+        INSERT INTO mentorship_poll_responses (poll_id, account_id, choice)
+        VALUES (${experiencePoll.id}, ${authenticated.id}, ${choice})
+        ON CONFLICT (poll_id, account_id) DO NOTHING
+        RETURNING account_id
+      `;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      if (!rows.length) {
+        sendJson(response, 409, { error: "You have already responded to this poll." });
+        return;
+      }
+      pollResponses.push({
+        pollId: experiencePoll.id,
+        accountId: authenticated.id,
+        choice,
+        createdAt: new Date().toISOString()
+      });
+    } else {
+      const existing = pollResponses.some(response =>
+        response.pollId === experiencePoll.id && response.accountId === authenticated.id
+      );
+      if (existing) {
+        sendJson(response, 409, { error: "You have already responded to this poll." });
+        return;
+      }
+      pollResponses.push({
+        pollId: experiencePoll.id,
+        accountId: authenticated.id,
+        choice,
+        createdAt: new Date().toISOString()
+      });
+      await savePollResponses();
+    }
+    sendJson(response, 201, { message: "Thanks for sharing your response." });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/app-reviews") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in to review the app." });
+      return;
+    }
+    const body = await readJson(request);
+    const rating = body && typeof body === "object" && !Array.isArray(body) ? Number(body.rating) : 0;
+    const comment = body && typeof body === "object" && !Array.isArray(body) && typeof body.comment === "string"
+      ? body.comment.trim()
+      : "";
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5 || comment.length > 1000) {
+      sendJson(response, 400, { error: "Choose a 1–5 star rating and keep feedback under 1,000 characters." });
+      return;
+    }
+    const createdAt = new Date().toISOString();
+    let review;
+    if (sql) {
+      const id = crypto.randomUUID();
+      const result = await sql`
+        INSERT INTO mentorship_app_reviews (id, account_id, rating, comment, created_at)
+        VALUES (${id}, ${authenticated.id}, ${rating}, ${comment}, ${createdAt})
+        ON CONFLICT (account_id) DO UPDATE
+        SET rating = EXCLUDED.rating, comment = EXCLUDED.comment, created_at = EXCLUDED.created_at
+        RETURNING id, account_id, rating, comment, created_at
+      `;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      const row = rows[0];
+      review = {
+        id: row.id,
+        accountId: row.account_id,
+        rating: Number(row.rating),
+        comment: row.comment,
+        createdAt: row.created_at
+      };
+      const existingIndex = appReviews.findIndex(item => item.accountId === authenticated.id);
+      if (existingIndex >= 0) appReviews[existingIndex] = review;
+      else appReviews.push(review);
+    } else {
+      const existing = appReviews.find(item => item.accountId === authenticated.id);
+      review = {
+        id: existing?.id || crypto.randomUUID(),
+        accountId: authenticated.id,
+        rating,
+        comment,
+        createdAt
+      };
+      if (existing) Object.assign(existing, review);
+      else appReviews.push(review);
+      await saveAppReviews();
+    }
+    sendJson(response, 201, { message: "Thanks for reviewing the app." });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/admin/app-reviews") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in to view app feedback." });
+      return;
+    }
+    if (!adminEmails.has(String(authenticated.email || "").trim().toLowerCase())) {
+      sendJson(response, 403, { error: "Administrator access is required." });
+      return;
+    }
+    if (sql) {
+      await refreshAccounts();
+      const result = await sql`SELECT id, account_id, rating, comment, created_at FROM mentorship_app_reviews ORDER BY created_at DESC`;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      appReviews = rows.map(row => ({
+        id: row.id,
+        accountId: row.account_id,
+        rating: Number(row.rating),
+        comment: row.comment,
+        createdAt: row.created_at
+      }));
+    }
+    const adminReviews = appReviews.map(review => {
+      const reviewer = accounts.find(account => account.id === review.accountId);
+      return {
+        rating: review.rating,
+        comment: review.comment,
+        createdAt: review.createdAt,
+        reviewerName: reviewer?.name || "Member",
+        reviewerEmail: reviewer?.email || ""
+      };
+    });
+    sendJson(response, 200, { reviews: adminReviews });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/admin/accounts") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in to view the admin area." });
+      return;
+    }
+    if (!adminEmails.has(String(authenticated.email || "").trim().toLowerCase())) {
+      sendJson(response, 403, { error: "Administrator access is required." });
+      return;
+    }
+    if (sql) await refreshAccounts();
+    const adminAccounts = accounts.map(account => ({
+      id: account.id,
+      name: account.name,
+      email: account.email,
+      role: account.role,
+      status: account.status,
+      createdAt: account.createdAt || "",
+      deletionExpiresAt: account.deletionExpiresAt || "",
+      isAdmin: adminEmails.has(String(account.email || "").trim().toLowerCase())
+    }));
+    sendJson(response, 200, { accounts: adminAccounts });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/admin/polls") {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in to view poll results." });
+      return;
+    }
+    if (!adminEmails.has(String(authenticated.email || "").trim().toLowerCase())) {
+      sendJson(response, 403, { error: "Administrator access is required." });
+      return;
+    }
+    const counts = new Map(experiencePoll.options.map(choice => [choice, 0]));
+    if (sql) {
+      const result = await sql`
+        SELECT choice, COUNT(*) AS votes
+        FROM mentorship_poll_responses
+        WHERE poll_id = ${experiencePoll.id}
+        GROUP BY choice
+      `;
+      const rows = Array.isArray(result) ? result : (result.rows || []);
+      for (const row of rows) {
+        if (counts.has(row.choice)) counts.set(row.choice, Number(row.votes));
+      }
+    } else {
+      for (const response of pollResponses) {
+        if (response.pollId === experiencePoll.id && counts.has(response.choice)) {
+          counts.set(response.choice, counts.get(response.choice) + 1);
+        }
+      }
+    }
+    const results = [...counts].map(([choice, votes]) => ({ choice, votes }));
+    sendJson(response, 200, {
+      poll: experiencePoll,
+      totalVotes: results.reduce((total, result) => total + result.votes, 0),
+      results
+    });
+    return;
+  }
+  const adminAccountMatch = url.pathname.match(/^\/api\/admin\/accounts\/([a-f0-9-]{36})$/i);
+  if (request.method === "POST" && adminAccountMatch) {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in to manage accounts." });
+      return;
+    }
+    if (!adminEmails.has(String(authenticated.email || "").trim().toLowerCase())) {
+      sendJson(response, 403, { error: "Administrator access is required." });
+      return;
+    }
+    const target = accounts.find(account => account.id === adminAccountMatch[1]);
+    if (!target) {
+      sendJson(response, 404, { error: "That account could not be found." });
+      return;
+    }
+    if (target.id === authenticated.id || adminEmails.has(String(target.email || "").trim().toLowerCase())) {
+      sendJson(response, 403, { error: "Administrators cannot manage their own account or another administrator." });
+      return;
+    }
+    const body = await readJson(request);
+    const action = body && typeof body === "object" && !Array.isArray(body) ? body.action : "";
+    if (!["suspend", "restore", "delete"].includes(action)) {
+      sendJson(response, 400, { error: "Choose a valid account action." });
+      return;
+    }
+    if (action === "suspend") {
+      if (target.status !== "Active") {
+        sendJson(response, 400, { error: "Only active accounts can be suspended." });
+        return;
+      }
+      target.status = "Suspended";
+      delete target.sessionTokenHash;
+      delete target.sessionExpiresAt;
+    } else if (action === "restore") {
+      if (target.status !== "Suspended" && target.status !== "PendingDeletion") {
+        sendJson(response, 400, { error: "Only suspended or pending-deletion accounts can be restored." });
+        return;
+      }
+      target.status = "Active";
+      delete target.deletionRequestedAt;
+      delete target.deletionExpiresAt;
+    } else {
+      if (target.status === "PendingDeletion") {
+        sendJson(response, 400, { error: "This account is already scheduled for deletion." });
+        return;
+      }
+      const deletionRequestedAt = Date.now();
+      target.status = "PendingDeletion";
+      target.deletionRequestedAt = new Date(deletionRequestedAt).toISOString();
+      target.deletionExpiresAt = new Date(deletionRequestedAt + 24 * 60 * 60 * 1000).toISOString();
+      delete target.sessionTokenHash;
+      delete target.sessionExpiresAt;
+    }
+    await saveAccounts();
+    sendJson(response, 200, {
+      account: {
+        id: target.id,
+        name: target.name,
+        email: target.email,
+        role: target.role,
+        status: target.status,
+        createdAt: target.createdAt || "",
+        deletionExpiresAt: target.deletionExpiresAt || "",
+        isAdmin: false
+      }
+    });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/account/profile") {
@@ -1323,7 +1723,7 @@ function requestErrorHandler(request, response) {
 }
 
 function ensureAccountsLoaded() {
-  if (!accountsReady) accountsReady = Promise.all([loadAccounts(), loadChatRequests(), loadMessages(), loadCalls(), loadReviews()]);
+  if (!accountsReady) accountsReady = Promise.all([loadAccounts(), loadChatRequests(), loadMessages(), loadCalls(), loadReviews(), loadPollResponses(), loadAppReviews()]);
   return accountsReady;
 }
 

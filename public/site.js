@@ -48,6 +48,9 @@ const profileInterestOptions = [
   "Urban Planning", "Veterinary Science", "Web Development"
 ];
 const maxChatAttachmentBytes = 3 * 1024 * 1024;
+const pollAfterActivityMs = 10 * 60 * 1000;
+const pollRecentActivityWindowMs = 60 * 1000;
+const pollSnoozeDurationMs = 5 * 60 * 1000;
 function logTestError(source, error) {
   console.error(`${source}:`, error);
 }
@@ -68,7 +71,7 @@ const savedUser = readStore("mm-user", { name: "Your name", email: "", interests
 const savedToken = readStore("mm-token", "");
 const savedRecentAccounts = readStore("mm-recent-accounts", []);
 const savedNavigation = readStore("mm-navigation", null);
-const validViews = new Set(["discover", "sessions", "profile", "member", "messages"]);
+const validViews = new Set(["discover", "sessions", "profile", "member", "messages", "admin"]);
 const savedAuthUsers = readStore("mm-auth-users", []);
 const savedUsersHaveClientCredentials = savedUsers.some(user => user.passwordSalt || user.passwordHash);
 let authUsers = savedAuthUsers;
@@ -99,6 +102,10 @@ const state = {
     .filter(([mentorId]) => !legacyDemoIds.has(mentorId))
     .map(([mentorId, review]) => [mentorId, Array.isArray(review) ? review : [review]])),
   users: savedUsers.filter(user => !legacyDemoIds.has(user.id) && !legacyDemoEmails.has(user.email)).map(({ passwordSalt, passwordHash, ...user }) => user),
+  adminAccounts: [],
+  poll: null,
+  adminPollResults: null,
+  adminAppReviews: [],
   reports: savedReports.filter(report => report.title !== "Inappropriate message reported"),
   query: "",
   mentorSort: "recommended"
@@ -120,6 +127,13 @@ let callAnswerAppliedId = "";
 let callStatusText = "";
 let callFailureNotified = false;
 let toastTimeout;
+let pollActiveMs = 0;
+let pollLastTickAt = Date.now();
+let pollLastActivityAt = 0;
+let pollSnoozedUntilActivityMs = 0;
+let pollStateLoaded = false;
+let pollStateRequest = null;
+let pollLastStateAttemptAt = 0;
 const safe = (value) => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 function apiHeaders(json = false) {
   const headers = {};
@@ -229,7 +243,104 @@ async function syncCommunityAccounts() {
     logTestError("Accounts sync", error);
   }
 }
-
+async function syncAdminAccounts() {
+  const response = await fetch("/api/admin/accounts", { headers: apiHeaders() });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) throw new Error(payload.error || `Admin account request failed (HTTP ${response.status}).`);
+  state.adminAccounts = payload.accounts || [];
+}
+async function syncAdminPollResults() {
+  const response = await fetch("/api/admin/polls", { headers: apiHeaders() });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) throw new Error(payload.error || `Poll results request failed (HTTP ${response.status}).`);
+  state.adminPollResults = payload;
+}
+async function syncAdminAppReviews() {
+  const response = await fetch("/api/admin/app-reviews", { headers: apiHeaders() });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) throw new Error(payload.error || `App feedback request failed (HTTP ${response.status}).`);
+  state.adminAppReviews = payload.reviews || [];
+}
+async function syncAdminDashboard() {
+  await Promise.all([syncAdminAccounts(), syncAdminPollResults(), syncAdminAppReviews()]);
+}
+function resetPollTracker(userId) {
+  const accountId = String(userId || "");
+  pollActiveMs = 0;
+  pollLastTickAt = Date.now();
+  pollLastActivityAt = accountId ? Date.now() : 0;
+  pollSnoozedUntilActivityMs = 0;
+  pollStateLoaded = false;
+  pollStateRequest = null;
+  pollLastStateAttemptAt = 0;
+  state.poll = null;
+}
+function syncPollState() {
+  if (!authToken || !state.user.id) return Promise.resolve();
+  const userId = state.user.id;
+  const token = authToken;
+  if (pollStateRequest?.userId === userId) return pollStateRequest.promise;
+  pollLastStateAttemptAt = Date.now();
+  const promise = (async () => {
+    const response = await fetch("/api/poll", { headers: { Authorization: `Bearer ${token}` } });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || `Poll status request failed (HTTP ${response.status}).`);
+    if (state.user.id !== userId || authToken !== token) return;
+    state.poll = { ...payload.poll, hasResponded: Boolean(payload.hasResponded) };
+    pollStateLoaded = true;
+  })();
+  const request = { userId, promise };
+  pollStateRequest = request;
+  return promise.finally(() => {
+    if (pollStateRequest === request) pollStateRequest = null;
+  });
+}
+function recordPollActivity() {
+  if (authToken && state.user.id && document.visibilityState === "visible") {
+    accruePollActivity(Date.now());
+    pollLastActivityAt = Date.now();
+  }
+}
+function accruePollActivity(now) {
+  const elapsed = now - pollLastTickAt;
+  if (elapsed > 0 && authToken && state.user.id && document.visibilityState === "visible" &&
+      navigator.onLine && now - pollLastActivityAt <= pollRecentActivityWindowMs) {
+    pollActiveMs += elapsed;
+  }
+  pollLastTickAt = now;
+}
+function isInActiveConversation() {
+  if (state.view !== "messages" || !state.activeConversationId) return false;
+  return state.bookings.some(booking =>
+    booking.id === state.activeConversationId && booking.status !== "Cancelled"
+  );
+}
+function openExperiencePoll() {
+  if (!state.poll || state.poll.hasResponded) return;
+  const options = state.poll.options.map(option =>
+    `<label class="poll-option"><input type="radio" name="choice" value="${safe(option)}" required><span>${safe(option)}</span></label>`
+  ).join("");
+  openModal("Quick poll", "Your feedback helps us improve MentorshipMatch.", `<form id="experience-poll-form" class="modal-form"><fieldset class="poll-fieldset"><legend>${safe(state.poll.question)}</legend>${options}</fieldset><div class="modal-actions"><button class="button-quiet" type="button" data-poll-dismiss>Not now</button><button class="button-primary" type="submit">Submit response</button></div></form>`);
+}
+function checkExperiencePoll() {
+  const now = Date.now();
+  accruePollActivity(now);
+  if (!authToken || !state.user.id) return;
+  if (!pollStateLoaded) {
+    if (!pollStateRequest && now - pollLastStateAttemptAt >= 30000) {
+      syncPollState().catch(error => {
+        console.error("Unable to load poll status", error);
+      });
+    }
+    return;
+  }
+  if (!state.poll || state.poll.hasResponded || pollActiveMs < pollAfterActivityMs ||
+      pollActiveMs < pollSnoozedUntilActivityMs || callSession || callPeerConnection ||
+      isInActiveConversation() || modalRoot.classList.contains("open")) {
+    return;
+  }
+  openExperiencePoll();
+}
 async function syncConnections() {
   if (!state.user.id || !authToken) return;
   try {
@@ -683,7 +794,9 @@ function updateShell() {
   document.querySelector(".topbar-user .avatar").innerHTML = avatarContent(state.user.name, state.user.profileImage);
   document.getElementById("session-count").textContent = state.bookings.filter(item => item.status !== "Completed" && item.status !== "Cancelled").length;
   const accountRole = document.getElementById("account-role");
-  if (accountRole) accountRole.textContent = `${state.user.role || "Student"} account`;
+  if (accountRole) accountRole.textContent = state.user.isAdmin ? "Administrator" : `${state.user.role || "Student"} account`;
+  const adminLink = document.getElementById("admin-nav-link");
+  if (adminLink) adminLink.hidden = !state.user.isAdmin;
 }
 function showToast(message) {
   const toast = document.getElementById("toast");
@@ -894,9 +1007,38 @@ function renderMessages() {
     return `<button class="conversation-choice ${booking.id === state.activeConversationId ? "selected" : ""}" data-message="${safe(booking.id)}"><span class="avatar ${state.user.role === "Mentor" ? "avatar-you" : "avatar-blue"}">${avatarContent(name, person?.profileImage)}</span><span><strong>${safe(name)}</strong><small>${safe(booking.topic)}</small>${presenceMarkup(person)}</span></button>`;
   }).join("") : `<div class="muted-copy conversation-empty">No connections yet. Request a mentor chat to start messaging.</div>`}</div></section>${convoPanel}</div></div>`;
 }
+function renderAdmin() {
+  const statusClass = { Active: "active", Suspended: "suspended", PendingDeletion: "pending" };
+  const accountRows = state.adminAccounts.map(account => {
+    const status = account.status || "Unknown";
+    const statusLabel = status === "PendingDeletion" ? "Deletion scheduled" : status;
+    const isProtected = account.isAdmin;
+    const actions = isProtected
+      ? `<span class="muted-copy">Administrator</span>`
+      : status === "Active"
+        ? `<button class="button-secondary" data-admin-action="suspend" data-admin-id="${safe(account.id)}">Suspend</button><button class="button-danger" data-admin-action="delete" data-admin-id="${safe(account.id)}">Delete</button>`
+        : status === "PendingDeletion"
+          ? `<button class="button-secondary" data-admin-action="restore" data-admin-id="${safe(account.id)}">Restore</button>`
+          : `<button class="button-secondary" data-admin-action="restore" data-admin-id="${safe(account.id)}">Restore</button><button class="button-danger" data-admin-action="delete" data-admin-id="${safe(account.id)}">Delete</button>`;
+    const deletionNote = status === "PendingDeletion" && account.deletionExpiresAt
+      ? `<small>Permanent deletion after ${safe(new Date(account.deletionExpiresAt).toLocaleString())}</small>`
+      : "";
+    return `<article class="admin-account-row"><div class="admin-account-person"><strong>${safe(account.name || "Unnamed account")}</strong><span>${safe(account.email)}</span></div><span class="admin-account-role">${safe(account.role || "Student")}</span><span class="admin-status ${statusClass[status] || ""}">${safe(statusLabel)}</span><div class="admin-account-actions">${actions}${deletionNote}</div></article>`;
+  }).join("");
+  const pollResults = state.adminPollResults;
+  const resultRows = (pollResults?.results || []).map(result => {
+    const percentage = pollResults.totalVotes
+      ? Math.round((result.votes / pollResults.totalVotes) * 100)
+      : 0;
+    return `<div class="poll-result-row"><div><span>${safe(result.choice)}</span><strong>${result.votes} · ${percentage}%</strong></div><div class="poll-result-track"><span style="width:${percentage}%"></span></div></div>`;
+  }).join("");
+  const appReviewRows = state.adminAppReviews.map(review => `<article class="review-item"><div class="review-rating" aria-label="${review.rating} out of 5 stars">${"★".repeat(Math.max(0, Math.min(5, Number(review.rating))))}${"☆".repeat(Math.max(0, 5 - Number(review.rating)))}</div><p>${safe(review.comment || "No written feedback.")}</p><small>${safe(review.reviewerName)}${review.reviewerEmail ? ` · ${safe(review.reviewerEmail)}` : ""}${review.createdAt ? ` · ${safe(new Date(review.createdAt).toLocaleString())}` : ""}</small></article>`).join("");
+  return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">Administrator tools</div><h1>Account management</h1><p>Review member accounts and manage access.</p></div><button class="button-secondary" data-admin-refresh>Refresh</button></div><section class="panel admin-panel"><div class="panel-heading"><div><h2>Accounts</h2><p>${state.adminAccounts.length} account${state.adminAccounts.length === 1 ? "" : "s"}</p></div></div><div class="admin-account-list">${accountRows || `<div class="empty-state"><strong>No accounts yet.</strong>Accounts will appear here after members sign up.</div>`}</div></section><section class="panel admin-polls"><div class="panel-heading"><div><h2>Poll results</h2><p>${safe(pollResults?.poll.question || "Loading poll results...")}</p></div><strong class="poll-total">${pollResults?.totalVotes || 0} responses</strong></div><div class="panel-body">${pollResults?.totalVotes ? `<div class="poll-result-list">${resultRows}</div>` : `<p class="muted-copy">No responses yet. Results show aggregate counts only.</p>`}</div></section><section class="panel admin-polls"><div class="panel-heading"><div><h2>Private app feedback</h2><p>Visible only to administrators.</p></div><strong class="poll-total">${state.adminAppReviews.length} review${state.adminAppReviews.length === 1 ? "" : "s"}</strong></div><div class="panel-body">${appReviewRows ? `<div class="review-list">${appReviewRows}</div>` : `<p class="muted-copy">No app reviews yet.</p>`}</div></section></div>`;
+}
 function render() {
-  const views = { discover: renderDiscover, sessions: renderSessions, profile: renderProfile, member: renderMemberProfile, messages: renderMessages };
-  const labels = { discover: "Discover people", sessions: "My sessions", profile: "My profile", member: "Community profile", messages: "Messages" };
+  if (state.view === "admin" && !state.user.isAdmin) state.view = "discover";
+  const views = { discover: renderDiscover, sessions: renderSessions, profile: renderProfile, member: renderMemberProfile, messages: renderMessages, admin: renderAdmin };
+  const labels = { discover: "Discover people", sessions: "My sessions", profile: "My profile", member: "Community profile", messages: "Messages", admin: "Admin" };
   document.getElementById("crumb-label").textContent = labels[state.view] || labels.discover;
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.view === state.view));
   viewContainer.innerHTML = (views[state.view] || renderDiscover)();
@@ -955,6 +1097,9 @@ function openReview(mentorId) {
   const mentor = state.users.find(item => item.id === mentorId && item.role === "Mentor"); if (!mentor) return;
   openModal("How did it go?", `Your feedback helps ${mentor.name.split(" ")[0]} and future mentees.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="review-form" data-mentor="${mentor.id}"><div class="field"><label>Your rating</label><div class="modal-rating" role="radiogroup" aria-label="Rating">${[1,2,3,4,5].map(num => `<button type="button" data-rating="${num}" aria-label="${num} star${num > 1 ? "s" : ""}">★</button>`).join("")}</div><input type="hidden" name="rating" required></div><div class="field"><label for="review-text">What would you like others to know?</label><textarea id="review-text" name="text" maxlength="300" required placeholder="What made this conversation meaningful?"></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Share review</button></div></form>`);
 }
+function openAppReview() {
+  openModal("Review the app", "Your feedback is private to the admin team and associated with your account.", `<form class="modal-form" id="app-review-form"><div class="field"><label>Your rating</label><div class="modal-rating" role="radiogroup" aria-label="App rating">${[1,2,3,4,5].map(num => `<button type="button" data-rating="${num}" aria-label="${num} star${num > 1 ? "s" : ""}">★</button>`).join("")}</div><input type="hidden" name="rating" required></div><div class="field"><label for="app-review-comment">What could we improve?</label><textarea id="app-review-comment" name="comment" maxlength="1000" placeholder="Share any thoughts about your experience..."></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Send private feedback</button></div></form>`);
+}
 function showAuth(mode = "login") {
   document.querySelector(".app-shell").style.display = "none";
   const authRoot = document.getElementById("auth-root");
@@ -994,6 +1139,9 @@ async function switchRecentAccount(userId) {
     }
     localStorage.setItem("mm-token", JSON.stringify(authToken));
     state.user = { ...account.user, ...verifiedUser, email: account.user.email };
+    resetPollTracker(state.user.id);
+    state.adminPollResults = null;
+    syncPollState().catch(error => console.error("Unable to load poll status", error));
     state.bookings = [];
     state.messages = {};
     state.view = "discover";
@@ -1044,6 +1192,11 @@ document.addEventListener("click", async event => {
     return;
   }
   if (target.hasAttribute("data-switch-account")) { await switchRecentAccount(target.dataset.switchAccount); return; }
+  if (target.hasAttribute("data-poll-dismiss")) {
+    pollSnoozedUntilActivityMs = pollActiveMs + pollSnoozeDurationMs;
+    closeModal();
+    return;
+  }
   if (target.hasAttribute("data-remove-attachment")) {
     const form = target.closest("#message-form");
     form.querySelector("#message-attachment").value = "";
@@ -1068,7 +1221,60 @@ document.addEventListener("click", async event => {
     render();
     return;
   }
-  if (target.dataset.view) { closeModal(); state.view = target.dataset.view; render(); document.getElementById("sidebar").classList.remove("open"); return; }
+  if (target.dataset.view) {
+    if (target.dataset.view === "admin") {
+      try {
+        await syncAdminDashboard();
+      } catch (error) {
+        console.error("Unable to load admin accounts", error);
+        showToast(error.message || "The admin area could not be loaded.");
+        return;
+      }
+    }
+    closeModal(); state.view = target.dataset.view; render(); document.getElementById("sidebar").classList.remove("open"); return;
+  }
+  if (target.hasAttribute("data-admin-refresh")) {
+    target.disabled = true;
+    try {
+      await syncAdminDashboard();
+      render();
+      showToast("Account list refreshed.");
+    } catch (error) {
+      console.error("Unable to refresh admin accounts", error);
+      showToast(error.message || "Accounts could not be refreshed.");
+      target.disabled = false;
+    }
+    return;
+  }
+  if (target.hasAttribute("data-admin-action")) {
+    const account = state.adminAccounts.find(item => item.id === target.dataset.adminId);
+    if (!account) { showToast("That account could not be found."); return; }
+    const action = target.dataset.adminAction;
+    const confirmation = action === "delete"
+      ? `Schedule ${account.email} for deletion? They will have 24 hours to restore the account.`
+      : action === "suspend"
+        ? `Suspend ${account.email}? They will no longer be able to sign in.`
+        : `Restore ${account.email} and allow them to sign in again?`;
+    if (!window.confirm(confirmation)) return;
+    target.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, {
+        method: "POST",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ action })
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `Account update failed (HTTP ${response.status}).`);
+      state.adminAccounts = state.adminAccounts.map(item => item.id === payload.account.id ? payload.account : item);
+      render();
+      showToast(action === "delete" ? "Account scheduled for deletion." : action === "suspend" ? "Account suspended." : "Account restored.");
+    } catch (error) {
+      console.error("Unable to update account", error);
+      showToast(error.message || "The account could not be updated.");
+      target.disabled = false;
+    }
+    return;
+  }
   if (target.hasAttribute("data-profile")) { state.profileId = target.dataset.profile; state.view = "member"; render(); return; }
   if (target.hasAttribute("data-message")) {
     state.activeConversationId = target.dataset.message;
@@ -1078,7 +1284,13 @@ document.addEventListener("click", async event => {
     return;
   }
   if (target.hasAttribute("data-book")) { openBooking(target.dataset.book); return; }
-  if (target.hasAttribute("data-close-modal")) { closeModal(); return; }
+  if (target.hasAttribute("data-close-modal")) {
+    if (modalRoot.querySelector("#experience-poll-form")) {
+      pollSnoozedUntilActivityMs = pollActiveMs + pollSnoozeDurationMs;
+    }
+    closeModal();
+    return;
+  }
   if (target.hasAttribute("data-review")) { openReview(target.dataset.review); return; }
   if (target.hasAttribute("data-cancel")) {
     try {
@@ -1130,8 +1342,9 @@ document.addEventListener("click", async event => {
   if (target.hasAttribute("data-profile-edit")) { document.getElementById("profile-name").focus(); return; }
   if (target.id === "account-button") {
     const otherAccounts = recentAccounts.filter(account => account.id !== state.user.id);
-    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-secondary" data-change-password>Change password</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
+    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-secondary" data-change-password>Change password</button><button class="button-secondary" data-app-review>Review the app</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
   }
+  if (target.hasAttribute("data-app-review")) { openAppReview(); return; }
   if (target.hasAttribute("data-change-password")) {
     openModal("Change password", "Confirm your current password, then choose a new one.", `<form id="change-password-form" class="modal-form"><div class="field"><label for="current-password">Current password</label><input id="current-password" name="currentPassword" type="password" maxlength="256" autocomplete="current-password" required></div><div class="field"><label for="new-password">New password</label><input id="new-password" name="newPassword" type="password" minlength="8" maxlength="256" autocomplete="new-password" required><small class="muted-copy">Use at least 8 characters.</small></div><div class="field"><label for="confirm-password">Confirm new password</label><input id="confirm-password" name="confirmPassword" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Update password</button></div></form>`);
     return;
@@ -1140,6 +1353,7 @@ document.addEventListener("click", async event => {
     if (callSession) await finishCall(true, false);
     await updatePresence(false);
     authToken = "";
+    resetPollTracker("");
     localStorage.removeItem("mm-token");
     closeModal(); showAuth(); return;
   }
@@ -1184,6 +1398,7 @@ document.addEventListener("click", async event => {
     state.bookings = [];
     state.reviews = {};
     state.user = { name: "Your name", email: "", interests: "", goal: "" };
+    resetPollTracker("");
     removeRecentAccount(deletedUserId);
     authToken = "";
     localStorage.removeItem("mm-token");
@@ -1237,6 +1452,36 @@ document.addEventListener("change", event => {
 document.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
+  if (form.id === "experience-poll-form") {
+    const choice = new FormData(form).get("choice");
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    try {
+      const response = await fetch("/api/poll", {
+        method: "POST",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ choice })
+      });
+      const payload = await readJsonResponse(response);
+      if (response.status === 409) {
+        await syncPollState();
+        if (state.poll?.hasResponded) {
+          closeModal();
+          showToast("You have already responded to this poll.");
+          return;
+        }
+      }
+      if (!response.ok) throw new Error(payload.error || `Poll response failed (HTTP ${response.status}).`);
+      if (state.poll) state.poll.hasResponded = true;
+      closeModal();
+      showToast(payload.message || "Thanks for sharing your response.");
+    } catch (error) {
+      console.error("Unable to submit poll response", error);
+      showToast(error.message || "Your poll response could not be saved.");
+      submitButton.disabled = false;
+    }
+    return;
+  }
   if (form.id === "booking-form") {
     const data = new FormData(form); const mentor = state.users.find(item => item.id === form.dataset.mentor && item.role === "Mentor" && item.status === "Active");
     if (!mentor) { showToast("That mentor could not be found."); return; }
@@ -1289,6 +1534,30 @@ document.addEventListener("submit", async event => {
       console.error("Unable to save review", error);
       logTestError("Review save", error);
       showToast(error.message || "Your review could not be saved.");
+      submitButton.disabled = false;
+    }
+    return;
+  }
+  if (form.id === "app-review-form") {
+    const data = new FormData(form);
+    const rating = Number(data.get("rating"));
+    if (!rating) { showToast("Choose a star rating before sharing."); return; }
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    try {
+      const response = await fetch("/api/app-reviews", {
+        method: "POST",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ rating, comment: String(data.get("comment") || "").trim() })
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `App review request failed (HTTP ${response.status}).`);
+      closeModal();
+      showToast("Thanks for reviewing the app!");
+    } catch (error) {
+      console.error("Unable to save app review", error);
+      logTestError("App review save", error);
+      showToast(error.message || "Your app review could not be saved.");
       submitButton.disabled = false;
     }
     return;
@@ -1446,6 +1715,10 @@ document.addEventListener("submit", async event => {
         }
         navigationOwnerId = payload.user.id;
         state.user = payload.user;
+        resetPollTracker(state.user.id);
+        state.adminPollResults = null;
+        syncPollState().catch(error => console.error("Unable to load poll status", error));
+        if (!state.user.isAdmin) state.adminAccounts = [];
         selectedProfileImage = state.user.profileImage || "";
         rememberRecentAccount(state.user, authToken);
         initializeNotificationState();
@@ -1467,25 +1740,52 @@ document.addEventListener("submit", async event => {
   }
 });
 document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
-modalRoot.addEventListener("click", event => { if (event.target === modalRoot) closeModal(); });
+modalRoot.addEventListener("click", event => {
+  if (event.target === modalRoot) {
+    if (modalRoot.querySelector("#experience-poll-form")) {
+      pollSnoozedUntilActivityMs = pollActiveMs + pollSnoozeDurationMs;
+    }
+    closeModal();
+  }
+});
+document.addEventListener("pointerdown", recordPollActivity, { passive: true });
+document.addEventListener("touchstart", recordPollActivity, { passive: true });
+document.addEventListener("keydown", recordPollActivity);
+document.addEventListener("input", recordPollActivity);
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape" && modalRoot.classList.contains("open")) closeModal();
+  if (event.key === "Escape" && modalRoot.classList.contains("open")) {
+    if (modalRoot.querySelector("#experience-poll-form")) {
+      pollSnoozedUntilActivityMs = pollActiveMs + pollSnoozeDurationMs;
+    }
+    closeModal();
+  }
   if (event.key === "Escape") closeNotificationMenu();
 });
 render();
 if (normalizeEmail(savedUser.email) && authToken) {
   document.getElementById("auth-root").classList.remove("active");
   document.querySelector(".app-shell").style.display = "";
+  resetPollTracker(state.user.id);
+  syncPollState().catch(error => console.error("Unable to load poll status", error));
   initializeNotificationState();
   updatePresence();
   syncCommunityAccounts();
   syncConnections();
   syncNotifications();
   syncCalls();
+  if (state.view === "admin" && state.user.isAdmin) {
+    syncAdminDashboard().then(render).catch(error => {
+      console.error("Unable to load admin accounts", error);
+      state.view = "discover";
+      render();
+      showToast(error.message || "The admin area could not be loaded.");
+    });
+  }
 } else {
   showAuth("login");
   syncCommunityAccounts();
 }
+setInterval(checkExperiencePoll, 1000);
 setInterval(() => updatePresence(), 25000);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") updatePresence();

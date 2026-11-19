@@ -12,7 +12,11 @@ Signed-in students and mentors can browse community profiles, including each mem
 
 After deploying this update, existing users may need to sign in again to start a secure session for profile and messaging features.
 
-Change a password while signed in from the account menu; the current password must be confirmed and new passwords must contain at least 8 characters. Deleting an account deactivates it immediately and schedules permanent deletion after 24 hours. Sign in with the same email and password during that window to restore the account.
+Change a password while signed in from the account menu; the current password must be confirmed and new passwords must contain at least 8 characters. Members can use **Review the app** in the account menu to send private, account-associated feedback visible only in the administrator area. Feedback is stored in `data/app-reviews.json` locally or in the Neon `mentorship_app_reviews` table. Deleting an account deactivates it immediately and schedules permanent deletion after 24 hours. Sign in with the same email and password during that window to restore the account.
+
+The configured administrator can access the administrator area to view accounts, suspend or restore access, and schedule account deletion; scheduled deletions become permanent after 24 hours. This app does not verify email addresses, so confirm account ownership before granting administrator access.
+
+Members are asked once to answer an experience poll after 10 minutes of active use. The poll waits until they are not in a call or an open conversation; activity time counts only while the app is visible and the member has interacted recently. Poll responses are stored in `data/poll-responses.json` locally or in the Neon `mentorship_poll_responses` table, and administrators see aggregate results only.
 ## Neon on Vercel
 
 Connect the Vercel project to the `neon-aureolin-cushion` Neon database. Add its connection string as `POSTGRES_URL` (or `DATABASE_URL`) in the Vercel project environment settings. Neon-backed deployments store accounts in `mentorship_accounts`; local JSON storage is used only for development.
