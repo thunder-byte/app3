@@ -108,6 +108,7 @@ const state = {
   adminAppReviews: [],
   reports: savedReports.filter(report => report.title !== "Inappropriate message reported"),
   query: "",
+  memberType: "all",
   mentorSort: "recommended"
 };
 let selectedProfileImage = state.user.profileImage || "";
@@ -898,7 +899,10 @@ function mentorCard(mentor) {
 }
 function renderDiscover() {
   const activeMembers = state.users.filter(user => user.status === "Active" && user.id !== state.user.id);
-  const matches = activeMembers.filter(mentor => matchesMemberSearch(mentor, state.query));
+  const matches = activeMembers.filter(member =>
+    (state.memberType === "all" || member.role === state.memberType) &&
+    matchesMemberSearch(member, state.query)
+  );
   matches.sort((left, right) => {
     if (state.mentorSort === "name") return left.name.localeCompare(right.name);
     if (state.mentorSort === "newest") return String(right.createdAt || "").localeCompare(String(left.createdAt || "")) || left.name.localeCompare(right.name);
@@ -918,9 +922,9 @@ function renderDiscover() {
       <div class="banner-art" aria-hidden="true"><div class="floating-card one"><strong>Good things grow here</strong>Curiosity is a great place to start.</div><div class="mentor-illustration"><div class="person-head"></div><div class="person-hair"></div><div class="person-body"></div><div class="person-shirt"></div></div><div class="floating-card two"><span class="tiny-avatar">✳</span><span>New connections,<br>new possibilities</span></div></div>
     </section>
     <section id="mentor-section"><div class="section-heading"><div><h2>Community members</h2><p>Explore member profiles and see what they're interested in.</p></div><button class="button-quiet" data-view="sessions">Your sessions <span>→</span></button></div>
-      <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search mentors by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search mentors by any profile detail"></label><label class="sort-control"><span>Sort by</span><select id="mentor-sort" class="filter-select" aria-label="Sort mentors"><option value="recommended" ${state.mentorSort === "recommended" ? "selected" : ""}>Recommended</option><option value="name" ${state.mentorSort === "name" ? "selected" : ""}>Name A–Z</option><option value="interest" ${state.mentorSort === "interest" ? "selected" : ""}>Academic interest A–Z</option><option value="newest" ${state.mentorSort === "newest" ? "selected" : ""}>Newest</option><option value="online" ${state.mentorSort === "online" ? "selected" : ""}>Online first</option></select></label>
-        <span class="result-count">${matches.length} mentors</span></div>
-      <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${state.query ? "No matching members found." : "No community profiles yet."}</strong>${state.query ? "Try another word or phrase to find a mentor." : "Member profiles will appear here once they join the community."}</div>`}</div>
+      <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search community members by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search community members by any profile detail"></label><label class="sort-control"><span>Show</span><select id="community-role" class="filter-select" aria-label="Filter community members by role"><option value="all" ${state.memberType === "all" ? "selected" : ""}>Everyone</option><option value="Mentor" ${state.memberType === "Mentor" ? "selected" : ""}>Mentors</option><option value="Student" ${state.memberType === "Student" ? "selected" : ""}>Students</option></select></label><label class="sort-control"><span>Sort by</span><select id="mentor-sort" class="filter-select" aria-label="Sort community members"><option value="recommended" ${state.mentorSort === "recommended" ? "selected" : ""}>Recommended</option><option value="name" ${state.mentorSort === "name" ? "selected" : ""}>Name A–Z</option><option value="interest" ${state.mentorSort === "interest" ? "selected" : ""}>Academic interest A–Z</option><option value="newest" ${state.mentorSort === "newest" ? "selected" : ""}>Newest</option><option value="online" ${state.mentorSort === "online" ? "selected" : ""}>Online first</option></select></label>
+        <span class="result-count">${matches.length} member${matches.length === 1 ? "" : "s"}</span></div>
+      <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${state.query || state.memberType !== "all" ? `No ${state.memberType === "all" ? "matching" : state.memberType.toLocaleLowerCase()} members found.` : "No community profiles yet."}</strong>${state.query || state.memberType !== "all" ? "Try changing the search or role filter." : "Member profiles will appear here once they join the community."}</div>`}</div>
     </section></div>`;
 }
 function renderSessions() {
@@ -1455,6 +1459,10 @@ document.addEventListener("input", event => {
   if (event.target.id === "mentor-search") { state.query = event.target.value; const cursor = event.target.selectionStart; render(); const input = document.getElementById("mentor-search"); input.focus(); input.setSelectionRange(cursor, cursor); }
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "community-role") {
+    state.memberType = event.target.value;
+    render();
+  }
   if (event.target.id === "mentor-sort") {
     state.mentorSort = event.target.value;
     render();
