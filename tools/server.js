@@ -1336,6 +1336,32 @@ async function handleRequest(request, response) {
     sendJson(response, 200, { messages: notifications.slice(0, 30) });
     return;
   }
+  if (request.method === "DELETE" && url.pathname === "/api/chat-requests") {
+    const body = await readJson(request);
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
+      sendJson(response, 401, { error: "Please sign in again to delete this session." });
+      return;
+    }
+    const connection = await findChatRequest(body.id);
+    const requesterId = connection?.requesterId || accounts.find(account => account.email === connection?.requesterEmail)?.id;
+    if (!connection || (authenticated.id !== connection.mentorId && authenticated.id !== requesterId)) {
+      sendJson(response, 404, { error: "This session could not be found." });
+      return;
+    }
+    messages = messages.filter(message => message.requestId !== connection.id);
+    calls = calls.filter(call => call.requestId !== connection.id);
+    chatRequests = chatRequests.filter(requestItem => requestItem.id !== connection.id);
+    if (sql) {
+      await sql`DELETE FROM mentorship_messages WHERE request_id = ${connection.id}`;
+      await sql`DELETE FROM mentorship_calls WHERE request_id = ${connection.id}`;
+      await sql`DELETE FROM mentorship_chat_requests WHERE id = ${connection.id}`;
+    } else {
+      await Promise.all([saveMessages(), saveCalls(), saveChatRequests()]);
+    }
+    sendJson(response, 200, { id: connection.id });
+    return;
+  }
   if (request.method === "PATCH" && url.pathname === "/api/chat-requests") {
     const body = await readJson(request);
     const authenticated = await authenticatedAccount(request);

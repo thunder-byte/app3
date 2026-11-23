@@ -934,7 +934,11 @@ function renderSessions() {
       const conversationName = state.user.role === "Mentor"
         ? (booking.requesterName || booking.requesterEmail)
         : (booking.mentorName || "Mentor");
-      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(booking.time)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? state.user.role === "Mentor" ? `<span class="muted-copy">Completed</span>` : `<button class="button-secondary" data-review="${booking.mentorId}">${reviewsFor(booking.mentorId).some(review => review.reviewerId === state.user.id || review.reviewerEmail === state.user.email) ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button></div></article>`;
+      const time = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(booking.time);
+      const displayTime = time
+        ? `${Number(time[1]) % 12 || 12}:${time[2]} ${Number(time[1]) < 12 ? "AM" : "PM"}`
+        : booking.time;
+      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(displayTime)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? state.user.role === "Mentor" ? `<span class="muted-copy">Completed</span>` : `<button class="button-secondary" data-review="${booking.mentorId}">${reviewsFor(booking.mentorId).some(review => review.reviewerId === state.user.id || review.reviewerEmail === state.user.email) ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button><button class="button-danger" data-delete-session="${safe(booking.id)}">Delete</button></div></article>`;
     }).join("")}</div>` : `<div class="empty-state"><strong>Your calendar has room for a great conversation.</strong>Find a mentor and book your first session.<br><button class="button-primary" style="margin-top:15px" data-view="discover">Browse mentors</button></div>`}</div></section></div>`;
 }
 function renderProfileInterestOptions(interests, query = "") {
@@ -1079,6 +1083,11 @@ function deleteMemberData(member) {
 function confirmAccountDeletion(member, ownAccount = false) {
   openModal("Delete this account?", "Your account will be deactivated now and permanently deleted after 24 hours. Sign in within that time to restore it.", `<div class="modal-form"><p style="font-size:12px;color:#656a60;line-height:1.6;margin:0">Account: <strong>${safe(member.name)}</strong>${member.email ? ` (${safe(member.email)})` : ""}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep account</button><button class="button-danger" type="button" ${ownAccount ? "data-delete-own" : `data-confirm-delete="${safe(member.id)}"`}>Delete account</button></div></div>`);
 }
+function confirmSessionDeletion(bookingId) {
+  const booking = state.bookings.find(item => item.id === bookingId);
+  if (!booking) return;
+  openModal("Delete this session?", "This permanently removes the session and its messages for both participants.", `<div class="modal-form"><p style="font-size:12px;color:#656a60;line-height:1.6;margin:0"><strong>${safe(booking.topic)}</strong> · ${safe(booking.date)} at ${safe(booking.time)}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep session</button><button class="button-danger" type="button" data-confirm-delete-session="${safe(booking.id)}">Delete session</button></div></div>`);
+}
 function openBooking(mentorId) {
   if (state.user.role !== "Student") {
     showToast("Only students can request chats with mentors.");
@@ -1089,7 +1098,7 @@ function openBooking(mentorId) {
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   openModal("Let's find a time", `Send ${mentor.name.split(" ")[0]} a session request.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="booking-form" data-mentor="${mentor.id}">
     <div class="field"><label for="booking-topic">What would you like to talk about?</label><input id="booking-topic" name="topic" required maxlength="70" placeholder="e.g. Getting started in product design"></div>
-    <div class="field-grid"><div class="field"><label for="booking-date">A date that works</label><input id="booking-date" name="date" type="date" min="${today}" required></div><div class="field"><label for="booking-time">Preferred time</label><select name="time" id="booking-time" required><option value="">Choose a time</option><option>9:00 AM</option><option>10:30 AM</option><option>12:00 PM</option><option>2:00 PM</option><option>3:30 PM</option><option>5:00 PM</option></select></div></div>
+    <div class="field-grid"><div class="field"><label for="booking-date">A date that works</label><input id="booking-date" name="date" type="date" min="${today}" required></div><div class="field"><label for="booking-time">Preferred time</label><input id="booking-time" name="time" type="time" step="60" required></div></div>
     <div class="field"><label for="booking-format">How would you like to meet?</label><select name="format" id="booking-format"><option>Video call</option><option>Chat</option></select></div>
     <div class="field"><label for="booking-note">A note for ${safe(mentor.name.split(" ")[0])} <span style="color:#999;font-weight:400">(optional)</span></label><textarea id="booking-note" name="note" maxlength="300" placeholder="Share a little context or a question you'd love to explore..."></textarea></div>
     <div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Maybe later</button><button class="button-primary" type="submit">Send request ↗</button></div></form>`);
@@ -1293,6 +1302,35 @@ document.addEventListener("click", async event => {
     return;
   }
   if (target.hasAttribute("data-review")) { openReview(target.dataset.review); return; }
+  if (target.hasAttribute("data-delete-session")) {
+    confirmSessionDeletion(target.dataset.deleteSession);
+    return;
+  }
+  if (target.hasAttribute("data-confirm-delete-session")) {
+    const bookingId = target.dataset.confirmDeleteSession;
+    target.disabled = true;
+    try {
+      const response = await fetch("/api/chat-requests", {
+        method: "DELETE",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ id: bookingId })
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || `Session deletion failed (HTTP ${response.status}).`);
+      state.bookings = state.bookings.filter(item => item.id !== bookingId);
+      delete state.messages[bookingId];
+      if (state.activeConversationId === bookingId) state.activeConversationId = "";
+      persist();
+      closeModal();
+      render();
+      showToast("Session deleted.");
+    } catch (error) {
+      console.error("Unable to delete session", error);
+      showToast(error.message || "The session could not be deleted.");
+      target.disabled = false;
+    }
+    return;
+  }
   if (target.hasAttribute("data-cancel")) {
     try {
       const response = await fetch("/api/chat-requests", {
