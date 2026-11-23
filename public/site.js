@@ -370,7 +370,8 @@ async function syncConnections() {
       time: request.time,
       format: request.format,
       note: request.note,
-      status: request.status
+      status: request.status,
+      completedBy: Array.isArray(request.completedBy) ? request.completedBy : []
     }));
     const remoteIds = new Set(remoteRequests.map(request => request.id));
     const previousBookings = JSON.stringify(state.bookings);
@@ -971,6 +972,29 @@ function renderDiscover() {
       <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${state.query || state.memberType !== "all" ? `No ${state.memberType === "all" ? "matching" : state.memberType.toLocaleLowerCase()} members found.` : "No community profiles yet."}</strong>${state.query || state.memberType !== "all" ? "Try changing the search or role filter." : "Member profiles will appear here once they join the community."}</div>`}</div>
     </section></div>`;
 }
+function canReviewMentor(mentorId) {
+  const userEmail = normalizeEmail(state.user.email);
+  return state.user.role === "Student" && state.bookings.some(booking =>
+    booking.mentorId === mentorId &&
+    booking.status === "Completed" &&
+    (booking.requesterId === state.user.id || (userEmail && normalizeEmail(booking.requesterEmail) === userEmail))
+  );
+}
+function renderSessionActions(booking, hasMarkedComplete) {
+  if (booking.status === "Completed") {
+    if (canReviewMentor(booking.mentorId)) {
+      const hasReviewed = reviewsFor(booking.mentorId).some(review =>
+        review.reviewerId === state.user.id || review.reviewerEmail === state.user.email
+      );
+      return `<button class="button-secondary" data-review="${safe(booking.mentorId)}">${hasReviewed ? "Review shared ✓" : "Leave a review"}</button>`;
+    }
+    return `<span class="muted-copy">Completed</span>`;
+  }
+  const completionAction = hasMarkedComplete
+    ? `<span class="muted-copy">Waiting for other participant</span>`
+    : `<button class="button-secondary" data-complete="${safe(booking.id)}">Mark complete</button>`;
+  return `${completionAction}<button class="button-quiet" data-cancel="${safe(booking.id)}">Cancel</button>`;
+}
 function renderSessions() {
   const bookings = state.bookings.filter(item => item.status !== "Cancelled").sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   const next = bookings.filter(item => item.status !== "Completed").length;
@@ -979,6 +1003,8 @@ function renderSessions() {
     <section class="panel"><div class="panel-heading"><div><h2>Your conversations</h2><p>Manage requests and reflect on past sessions.</p></div></div><div class="panel-body">${bookings.length ? `<div class="session-list">${bookings.map(booking => {
       const date = new Date(`${booking.date}T12:00:00`);
       const statusClass = booking.status === "Pending" ? "pending" : booking.status === "Completed" ? "completed" : "";
+      const hasMarkedComplete = Array.isArray(booking.completedBy) && booking.completedBy.includes(state.user.id);
+      const statusLabel = booking.status === "Completed" ? "Completed" : hasMarkedComplete ? "Waiting for other participant" : booking.status;
       const conversationName = state.user.role === "Mentor"
         ? (booking.requesterName || booking.requesterEmail)
         : (booking.mentorName || "Mentor");
@@ -986,7 +1012,7 @@ function renderSessions() {
       const displayTime = time
         ? `${Number(time[1]) % 12 || 12}:${time[2]} ${Number(time[1]) < 12 ? "AM" : "PM"}`
         : booking.time;
-      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(displayTime)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? state.user.role === "Mentor" ? `<span class="muted-copy">Completed</span>` : `<button class="button-secondary" data-review="${booking.mentorId}">${reviewsFor(booking.mentorId).some(review => review.reviewerId === state.user.id || review.reviewerEmail === state.user.email) ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button><button class="button-danger" data-delete-session="${safe(booking.id)}">Delete</button></div></article>`;
+      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(displayTime)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${statusLabel}</span><div class="session-actions">${renderSessionActions(booking, hasMarkedComplete)}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button><button class="button-danger" data-delete-session="${safe(booking.id)}">Delete</button></div></article>`;
     }).join("")}</div>` : `<div class="empty-state"><strong>Your calendar has room for a great conversation.</strong>Find a mentor and book your first session.<br><button class="button-primary" style="margin-top:15px" data-view="discover">Browse mentors</button></div>`}</div></section></div>`;
 }
 function renderProfileInterestOptions(interests) {
@@ -1222,6 +1248,7 @@ function openBooking(mentorId) {
     <div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Maybe later</button><button class="button-primary" type="submit">Send request ↗</button></div></form>`);
 }
 function openReview(mentorId) {
+  if (!canReviewMentor(mentorId)) return;
   const mentor = state.users.find(item => item.id === mentorId && item.role === "Mentor"); if (!mentor) return;
   openModal("How did it go?", `Your feedback helps ${mentor.name.split(" ")[0]} and future mentees.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="review-form" data-mentor="${mentor.id}"><fieldset class="field rating-field"><legend>Your rating</legend><div class="modal-rating">${[1,2,3,4,5].map(num => `<label class="rating-option"><input class="visually-hidden" type="radio" name="rating" value="${num}" aria-label="${num} star${num > 1 ? "s" : ""}" required><span aria-hidden="true">★</span></label>`).join("")}</div></fieldset><div class="field"><label for="review-text">What would you like others to know?</label><textarea id="review-text" name="text" maxlength="300" required placeholder="What made this conversation meaningful?"></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Share review</button></div></form>`);
 }
@@ -1510,10 +1537,15 @@ document.addEventListener("click", async event => {
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `Completion update failed (HTTP ${response.status}).`);
       const booking = state.bookings.find(item => item.id === target.dataset.complete);
-      if (booking) booking.status = payload.request.status;
+      if (booking) {
+        booking.status = payload.request.status;
+        booking.completedBy = Array.isArray(payload.request.completedBy) ? payload.request.completedBy : [];
+      }
       persist();
       render();
-      showToast("Session marked complete for both participants.");
+      showToast(payload.request.status === "Completed"
+        ? "Both participants marked the session complete."
+        : "You marked this session complete. Waiting for the other participant.");
     } catch (error) {
       console.error("Unable to mark session complete", error);
       showToast(error.message || "The session could not be marked complete.");
@@ -1682,7 +1714,7 @@ document.addEventListener("submit", async event => {
   if (form.id === "booking-form") {
     const data = new FormData(form); const mentor = state.users.find(item => item.id === form.dataset.mentor && item.role === "Mentor" && item.status === "Active");
     if (!mentor) { showToast("That mentor could not be found."); return; }
-    const booking = { id: `booking-${Date.now()}`, mentorId: mentor.id, requesterId: state.user.id, mentorName: mentor.name, requesterEmail: state.user.email, topic: data.get("topic").trim(), date: data.get("date"), time: data.get("time"), format: data.get("format"), note: data.get("note").trim(), status: "Pending" };
+    const booking = { id: `booking-${Date.now()}`, mentorId: mentor.id, requesterId: state.user.id, mentorName: mentor.name, requesterEmail: state.user.email, topic: data.get("topic").trim(), date: data.get("date"), time: data.get("time"), format: data.get("format"), note: data.get("note").trim(), status: "Pending", completedBy: [] };
     const submitButton = form.querySelector('button[type="submit"]');
     submitButton.disabled = true;
     try {

@@ -20,9 +20,9 @@ button { color: inherit; }
 .sidebar { width: 254px; position: fixed; inset: 0 auto 0 0; padding: 29px 18px 17px; background: #fff; border-right: 1px solid var(--line); display: flex; flex-direction: column; z-index: 10; }
 .brand { display: flex; align-items: center; gap: 10px; color: #30372d; text-decoration: none; font-family: var(--serif); font-weight: 800; font-size: 21px; letter-spacing: -.6px; padding: 0 9px; }
 .brand-light { color: #676b62; font-weight: 500; }
-.brand-mark { width: 24px; height: 24px; background: var(--green); border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 2px; }
+.brand-mark { box-sizing: border-box; flex: 0 0 24px; width: 24px; height: 24px; aspect-ratio: 1; background: var(--green); border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 2px; }
 .brand-mark span { width: 3px; border-radius: 4px; background: #d8edb9; }
-.brand-mark span:nth-child(1) { height: 8px; }.brand-mark span:nth-child(2) { height: 13px; }.brand-mark span:nth-child(3) { height: 10px; }
+.brand-mark span:nth-child(1) { height: 8px; }.brand-mark span:nth-child(2) { height: 13px; }.brand-mark span:nth-child(3) { height: 8px; }
 .workspace-label { padding: 0 11px; margin: 48px 0 12px; color: #7c7e77; font-size: 14px; font-weight: 700; letter-spacing: 1.15px; }
 .main-nav { display: grid; gap: 4px; }
 .nav-link { height: 42px; width: 100%; border: 0; border-radius: 8px; background: transparent; color: #656a60; text-align: left; padding: 0 11px; display: flex; align-items: center; gap: 12px; font-size: 16px; cursor: pointer; transition: .18s ease; }

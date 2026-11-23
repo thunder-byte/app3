@@ -1249,6 +1249,7 @@ async function handleRequest(request, response) {
       format: String(body.format || "").slice(0, 50),
       note: String(body.note || "").slice(0, 1000),
       status: "Pending",
+      completedBy: [],
       createdAt: new Date().toISOString()
     };
     if (sql) {
@@ -1377,7 +1378,19 @@ async function handleRequest(request, response) {
       return;
     }
     if (body.action === "complete") {
-      connection.status = "Completed";
+      const participantIds = [...new Set([connection.mentorId, requesterId].filter(Boolean))];
+      const previousCompletedBy = Array.isArray(connection.completedBy)
+        ? connection.completedBy
+        : connection.status === "Completed" ? participantIds : [];
+      const completedBy = [...new Set(previousCompletedBy.filter(id => participantIds.includes(id)))];
+      if (!completedBy.includes(userId)) completedBy.push(userId);
+      connection.requesterId = requesterId || connection.requesterId;
+      connection.completedBy = completedBy;
+      const bothParticipantsCompleted = participantIds.length === 2 &&
+        participantIds.every(id => completedBy.includes(id));
+      connection.status = bothParticipantsCompleted
+        ? "Completed"
+        : connection.status === "Completed" ? "Pending" : connection.status;
     } else {
       connection.status = "Cancelled";
     }
@@ -1682,10 +1695,21 @@ async function handleRequest(request, response) {
       sendJson(response, 403, { error: "A review can only be shared from your own account." });
       return;
     }
+    if (authenticated.role !== "Student") {
+      sendJson(response, 403, { error: "Only students can review mentors." });
+      return;
+    }
     const rating = Number(body.rating);
     const text = typeof body.text === "string" ? body.text.trim() : "";
-    const connected = chatRequests.some(item => item.mentorId === mentorId && item.status !== "Cancelled" &&
-      ((item.requesterId && item.requesterId === reviewerId) || accounts.find(account => account.id === reviewerId)?.email === item.requesterEmail));
+    const connected = chatRequests.some(item => {
+      if (item.mentorId !== mentorId || item.status !== "Completed") return false;
+      const requesterId = item.requesterId || accounts.find(account => account.email === item.requesterEmail)?.id;
+      const isReviewer = requesterId === reviewerId ||
+        String(item.requesterEmail || "").toLowerCase() === String(authenticated.email || "").toLowerCase();
+      const bothParticipantsCompleted = !Array.isArray(item.completedBy) ||
+        (item.completedBy.includes(item.mentorId) && item.completedBy.includes(reviewerId));
+      return isReviewer && bothParticipantsCompleted;
+    });
     const mentor = accounts.find(account => account.id === mentorId && account.role === "Mentor" && account.status === "Active");
     if (!mentor || !connected || !Number.isInteger(rating) || rating < 1 || rating > 5 || !text || text.length > 1000) {
       sendJson(response, 400, { error: "A valid connected member, rating, and review are required." });
