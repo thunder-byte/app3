@@ -237,3 +237,9 @@ h1, h2, h3, p { margin-top: 0; }h1,h2,h3 { font-family: var(--serif); letter-spa
     transition-duration: 0.01ms !important;
   }
 }
+.field select[hidden] { display: none; }
+.profile-interest-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.profile-interest-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid #dfe5d9; border-radius: 999px; background: #f1f5ed; color: #40573e; font-size: 15px; }
+.profile-interest-chip button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #40573e; font-size: 18px; line-height: 1; cursor: pointer; }
+.profile-interest-chip button:hover { background: #dfe8d7; }
+.profile-interest-empty { color: var(--muted); font-size: 14px; }

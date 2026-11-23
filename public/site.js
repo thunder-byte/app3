@@ -978,15 +978,37 @@ function renderProfileInterestOptions(interests, query = "") {
   const options = [
     ...profileInterestOptions.map(value => ({ value, selected: selectedSet.has(value.toLocaleLowerCase()) })),
     ...legacyOptions.map(value => ({ value, selected: true }))
-  ].filter(option => !normalizedQuery || option.selected || option.value.toLocaleLowerCase().includes(normalizedQuery));
+  ].filter(option => !normalizedQuery || option.value.toLocaleLowerCase().includes(normalizedQuery));
   if (!options.length) return `<option disabled>No matching interests</option>`;
-  return options.map(option => `<option value="${safe(option.value)}" ${option.selected ? "selected" : ""}>${safe(option.value)}</option>`).join("");
+  return options.map(option => `<option value="${safe(option.value)}" ${option.selected ? "disabled" : ""}>${safe(option.value)}${option.selected ? " (already added)" : ""}</option>`).join("");
+}
+function renderSelectedProfileInterestOptions(interests) {
+  const selectedValues = Array.isArray(interests) ? interests : String(interests || "").split(",");
+  return selectedValues.map(value => value.trim()).filter(Boolean)
+    .map(value => `<option value="${safe(value)}" selected>${safe(value)}</option>`).join("");
+}
+function renderSelectedProfileInterestChips(interests) {
+  const selectedValues = Array.isArray(interests) ? interests : String(interests || "").split(",");
+  const values = selectedValues.map(value => value.trim()).filter(Boolean);
+  if (!values.length) return `<span class="profile-interest-empty" role="listitem">No interests selected yet.</span>`;
+  return values.map(value => `<span class="profile-interest-chip" role="listitem">${safe(value)}<button type="button" data-remove-profile-interest="${safe(value)}" aria-label="Remove ${safe(value)}">×</button></span>`).join("");
+}
+function selectedProfileInterests() {
+  const select = document.getElementById("profile-interests");
+  return [...select.selectedOptions].map(option => option.value);
+}
+function updateProfileInterestControls(interests, query = "") {
+  const hiddenSelect = document.getElementById("profile-interests");
+  hiddenSelect.innerHTML = renderSelectedProfileInterestOptions(interests);
+  const dropdown = document.getElementById("profile-interest-select");
+  dropdown.innerHTML = `<option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(interests, query)}`;
+  document.getElementById("profile-selected-interests").innerHTML = renderSelectedProfileInterestChips(interests);
 }
 function renderProfile() {
   const profileImage = selectedProfileImage || state.user.profileImage || "";
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A little about you</div><h1>My profile</h1><p>Share your interests and a little about yourself with the community.</p></div></div>
     <div class="profile-layout"><section class="profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar avatar-you profile-picture-preview">${avatarContent(state.user.name, profileImage)}</span><div><h2>${safe(state.user.name)}</h2><p>${safe(state.user.role || "Student")} · Making room for what's next</p></div></div>
-      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#6d7169;font-size:13px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-search">Academic & career interests</label><input id="profile-interest-search" type="search" placeholder="Search interests..." aria-label="Search academic and career interests"><select id="profile-interests" name="interests" multiple size="6" aria-describedby="profile-interests-help">${renderProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose one or more options. Hold Ctrl (Windows) or Command (Mac) to select multiple interests.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
+      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#6d7169;font-size:13px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-select">Academic & career interests</label><input id="profile-interest-search" type="search" placeholder="Search interests..." aria-label="Search available interests" aria-controls="profile-interest-select"><select id="profile-interest-select" aria-describedby="profile-interests-help"><option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(state.user.interests)}</select><div id="profile-selected-interests" class="profile-interest-list" role="list" aria-label="Selected academic and career interests">${renderSelectedProfileInterestChips(state.user.interests)}</div><select id="profile-interests" name="interests" multiple hidden aria-hidden="true">${renderSelectedProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose an interest from the dropdown to add it. You can remove selected interests below; press Save changes to save your updates.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
     </section><aside class="profile-side"><section class="panel"><div class="panel-heading"><h2>Your interests</h2><button class="button-quiet" data-profile-edit>Edit</button></div><div class="panel-body">${(state.user.interests || "").split(",").filter(Boolean).map(item => `<div class="interest-item"><span>${safe(item.trim())}</span><span>↗</span></div>`).join("") || `<span style="font-size:15px;color:#787a72">Add interests to personalize your matches.</span>`}</div></section><section class="panel profile-reviews"><div class="panel-heading"><h2>Reviews about you</h2></div><div class="panel-body">${reviewListMarkup(state.user.id)}</div></section><div class="profile-tip"><strong>Good profiles get great conversations.</strong>Sharing what you're curious about helps mentors show up with ideas made for you.</div></aside></div></div>`;
 }
 function reviewListMarkup(memberId) {
@@ -1259,6 +1281,15 @@ async function switchRecentAccount(userId) {
 }
 document.addEventListener("click", async event => {
   if (!event.target.closest(".notification-menu-wrap")) closeNotificationMenu();
+  const removeInterestButton = event.target.closest("[data-remove-profile-interest]");
+  if (removeInterestButton) {
+    const valueToRemove = removeInterestButton.dataset.removeProfileInterest.toLocaleLowerCase();
+    const interests = selectedProfileInterests().filter(value => value.toLocaleLowerCase() !== valueToRemove);
+    const search = document.getElementById("profile-interest-search");
+    updateProfileInterestControls(interests, search.value);
+    document.getElementById("profile-interest-select").focus();
+    return;
+  }
   const target = event.target.closest("button");
   if (!target) return;
   if (target.hasAttribute("data-call-mode")) { await startCall(target.dataset.call, target.dataset.callMode, target); return; }
@@ -1534,14 +1565,22 @@ document.addEventListener("click", async event => {
 });
 document.addEventListener("input", event => {
   if (event.target.id === "profile-interest-search") {
-    const select = document.getElementById("profile-interests");
-    const selectedInterests = [...select.selectedOptions].map(option => option.value);
-    select.innerHTML = renderProfileInterestOptions(selectedInterests, event.target.value);
+    const dropdown = document.getElementById("profile-interest-select");
+    dropdown.innerHTML = `<option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(selectedProfileInterests(), event.target.value)}`;
     return;
   }
   if (event.target.id === "mentor-search") { state.query = event.target.value; const cursor = event.target.selectionStart; render(); const input = document.getElementById("mentor-search"); input.focus(); input.setSelectionRange(cursor, cursor); }
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "profile-interest-select" && event.target.value) {
+    const interests = selectedProfileInterests();
+    const selectedValue = event.target.value;
+    if (!interests.some(value => value.toLocaleLowerCase() === selectedValue.toLocaleLowerCase())) interests.push(selectedValue);
+    document.getElementById("profile-interest-search").value = "";
+    updateProfileInterestControls(interests);
+    event.target.focus();
+    return;
+  }
   if (event.target.matches('input[type="radio"][name="rating"]')) {
     const rating = Number(event.target.value);
     event.target.closest("fieldset").querySelectorAll(".rating-option").forEach((option, index) => {
