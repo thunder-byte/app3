@@ -119,6 +119,8 @@ let knownMentorIds = null;
 const viewContainer = document.getElementById("view-container");
 const modalRoot = document.getElementById("modal-root");
 const callRoot = document.getElementById("call-root");
+let modalReturnFocus = null;
+let callReturnFocus = null;
 let callSession = null;
 let callPeerConnection = null;
 let callLocalStream = null;
@@ -388,11 +390,29 @@ function renderCallOverlay() {
   if (!callRoot) return;
   if (!callSession) {
     callRoot.innerHTML = "";
+    if (callReturnFocus) {
+      const returnFocus = callReturnFocus;
+      callReturnFocus = null;
+      setModalBackgroundHidden(false);
+      if (returnFocus.isConnected) returnFocus.focus();
+    }
     return;
+  }
+  const callDialogIsNew = !callRoot.querySelector('[role="dialog"]');
+  const hadCallFocus = callRoot.contains(document.activeElement);
+  const focusedCallAction = hadCallFocus
+    ? ["data-call-decline", "data-call-accept", "data-call-mute", "data-call-video", "data-call-end"]
+      .find(attribute => document.activeElement.hasAttribute(attribute))
+    : "";
+  if (callDialogIsNew) {
+    callReturnFocus = document.activeElement;
+    setModalBackgroundHidden(true);
   }
   const incoming = callSession.status === "ringing" && callSession.recipientId === state.user.id && !callPeerConnection;
   if (incoming) {
     callRoot.innerHTML = `<section class="call-card incoming-call" role="dialog" aria-modal="true" aria-labelledby="call-title"><span class="call-eyebrow">Incoming ${callSession.mode} call</span><h2 id="call-title">${safe(callSession.callerName)} is calling</h2><p>Answer this call from your connected conversation?</p><div class="call-actions"><button class="button-secondary" type="button" data-call-decline>Decline</button><button class="button-primary" type="button" data-call-accept>Answer</button></div></section>`;
+    const focusTarget = callDialogIsNew ? callRoot.querySelector("[data-call-accept]") : focusedCallAction && callRoot.querySelector(`[${focusedCallAction}]`);
+    focusTarget?.focus();
     return;
   }
   const videoCall = callSession.mode === "video";
@@ -403,6 +423,8 @@ function renderCallOverlay() {
   if (localVideo && callLocalStream) localVideo.srcObject = callLocalStream;
   if (remoteVideo && callRemoteStream) remoteVideo.srcObject = callRemoteStream;
   if (remoteAudio && callRemoteStream) remoteAudio.srcObject = callRemoteStream;
+  const focusTarget = callDialogIsNew ? callRoot.querySelector("[data-call-mute]") : focusedCallAction && callRoot.querySelector(`[${focusedCallAction}]`);
+  focusTarget?.focus();
 }
 async function callApi(action, details) {
   const response = await fetch("/api/calls", {
@@ -922,7 +944,7 @@ function renderDiscover() {
       <div class="banner-art" aria-hidden="true"><div class="floating-card one"><strong>Good things grow here</strong>Curiosity is a great place to start.</div><div class="mentor-illustration"><div class="person-head"></div><div class="person-hair"></div><div class="person-body"></div><div class="person-shirt"></div></div><div class="floating-card two"><span class="tiny-avatar">✳</span><span>New connections,<br>new possibilities</span></div></div>
     </section>
     <section id="mentor-section"><div class="section-heading"><div><h2>Community members</h2><p>Explore member profiles and see what they're interested in.</p></div><button class="button-quiet" data-view="sessions">Your sessions <span>→</span></button></div>
-      <div class="filter-row"><label class="search-field"><span>⌕</span><input id="mentor-search" type="search" placeholder="Search community members by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search community members by any profile detail"></label><label class="sort-control"><span>Show</span><select id="community-role" class="filter-select" aria-label="Filter community members by role"><option value="all" ${state.memberType === "all" ? "selected" : ""}>Everyone</option><option value="Mentor" ${state.memberType === "Mentor" ? "selected" : ""}>Mentors</option><option value="Student" ${state.memberType === "Student" ? "selected" : ""}>Students</option></select></label><label class="sort-control"><span>Sort by</span><select id="mentor-sort" class="filter-select" aria-label="Sort community members"><option value="recommended" ${state.mentorSort === "recommended" ? "selected" : ""}>Recommended</option><option value="name" ${state.mentorSort === "name" ? "selected" : ""}>Name A–Z</option><option value="interest" ${state.mentorSort === "interest" ? "selected" : ""}>Academic interest A–Z</option><option value="newest" ${state.mentorSort === "newest" ? "selected" : ""}>Newest</option><option value="online" ${state.mentorSort === "online" ? "selected" : ""}>Online first</option></select></label>
+      <div class="filter-row"><label class="search-field"><span aria-hidden="true">⌕</span><input id="mentor-search" type="search" placeholder="Search community members by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search community members by any profile detail"></label><label class="sort-control"><span>Show</span><select id="community-role" class="filter-select" aria-label="Filter community members by role"><option value="all" ${state.memberType === "all" ? "selected" : ""}>Everyone</option><option value="Mentor" ${state.memberType === "Mentor" ? "selected" : ""}>Mentors</option><option value="Student" ${state.memberType === "Student" ? "selected" : ""}>Students</option></select></label><label class="sort-control"><span>Sort by</span><select id="mentor-sort" class="filter-select" aria-label="Sort community members"><option value="recommended" ${state.mentorSort === "recommended" ? "selected" : ""}>Recommended</option><option value="name" ${state.mentorSort === "name" ? "selected" : ""}>Name A–Z</option><option value="interest" ${state.mentorSort === "interest" ? "selected" : ""}>Academic interest A–Z</option><option value="newest" ${state.mentorSort === "newest" ? "selected" : ""}>Newest</option><option value="online" ${state.mentorSort === "online" ? "selected" : ""}>Online first</option></select></label>
         <span class="result-count">${matches.length} member${matches.length === 1 ? "" : "s"}</span></div>
       <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${state.query || state.memberType !== "all" ? `No ${state.memberType === "all" ? "matching" : state.memberType.toLocaleLowerCase()} members found.` : "No community profiles yet."}</strong>${state.query || state.memberType !== "all" ? "Try changing the search or role filter." : "Member profiles will appear here once they join the community."}</div>`}</div>
     </section></div>`;
@@ -964,8 +986,8 @@ function renderProfile() {
   const profileImage = selectedProfileImage || state.user.profileImage || "";
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A little about you</div><h1>My profile</h1><p>Share your interests and a little about yourself with the community.</p></div></div>
     <div class="profile-layout"><section class="profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar avatar-you profile-picture-preview">${avatarContent(state.user.name, profileImage)}</span><div><h2>${safe(state.user.name)}</h2><p>${safe(state.user.role || "Student")} · Making room for what's next</p></div></div>
-      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#888d83;font-size:9px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-search">Academic & career interests</label><input id="profile-interest-search" type="search" placeholder="Search interests..." aria-label="Search academic and career interests"><select id="profile-interests" name="interests" multiple size="6" aria-describedby="profile-interests-help">${renderProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose one or more options. Hold Ctrl (Windows) or Command (Mac) to select multiple interests.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
-    </section><aside class="profile-side"><section class="panel"><div class="panel-heading"><h2>Your interests</h2><button class="button-quiet" data-profile-edit>Edit</button></div><div class="panel-body">${(state.user.interests || "").split(",").filter(Boolean).map(item => `<div class="interest-item"><span>${safe(item.trim())}</span><span>↗</span></div>`).join("") || `<span style="font-size:11px;color:#96998f">Add interests to personalize your matches.</span>`}</div></section><section class="panel profile-reviews"><div class="panel-heading"><h2>Reviews about you</h2></div><div class="panel-body">${reviewListMarkup(state.user.id)}</div></section><div class="profile-tip"><strong>Good profiles get great conversations.</strong>Sharing what you're curious about helps mentors show up with ideas made for you.</div></aside></div></div>`;
+      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#6d7169;font-size:13px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-search">Academic & career interests</label><input id="profile-interest-search" type="search" placeholder="Search interests..." aria-label="Search academic and career interests"><select id="profile-interests" name="interests" multiple size="6" aria-describedby="profile-interests-help">${renderProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose one or more options. Hold Ctrl (Windows) or Command (Mac) to select multiple interests.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
+    </section><aside class="profile-side"><section class="panel"><div class="panel-heading"><h2>Your interests</h2><button class="button-quiet" data-profile-edit>Edit</button></div><div class="panel-body">${(state.user.interests || "").split(",").filter(Boolean).map(item => `<div class="interest-item"><span>${safe(item.trim())}</span><span>↗</span></div>`).join("") || `<span style="font-size:15px;color:#787a72">Add interests to personalize your matches.</span>`}</div></section><section class="panel profile-reviews"><div class="panel-heading"><h2>Reviews about you</h2></div><div class="panel-body">${reviewListMarkup(state.user.id)}</div></section><div class="profile-tip"><strong>Good profiles get great conversations.</strong>Sharing what you're curious about helps mentors show up with ideas made for you.</div></aside></div></div>`;
 }
 function reviewListMarkup(memberId) {
   const memberReviews = reviewsFor(memberId);
@@ -998,7 +1020,7 @@ function messageMarkup(message) {
     ? connection.requesterId || state.users.find(user => normalizeEmail(user.email) === normalizeEmail(connection.requesterEmail))?.id
     : connection?.mentorId;
   const seen = isMine && partnerId && Array.isArray(message.readBy) && message.readBy.includes(partnerId);
-  return `<div class="chat-message ${isMine ? "mine" : ""}"><span>${safe(message.senderName)}</span>${message.text ? `<p>${safe(message.text)}</p>` : ""}${attachmentMarkup}<small>${new Date(message.createdAt).toLocaleString()}</small>${seen ? `<small aria-label="Seen by recipient"> · Seen</small>` : ""}</div>`;
+  return `<div class="chat-message ${isMine ? "mine" : ""}"><span>${safe(message.senderName)}</span>${message.text ? `<p>${safe(message.text)}</p>` : ""}${attachmentMarkup}<time datetime="${safe(message.createdAt)}">${new Date(message.createdAt).toLocaleString()}</time>${seen ? `<small aria-label="Seen by recipient"> · Seen</small>` : ""}</div>`;
 }
 function renderMessages() {
   const conversations = state.bookings.filter(booking => booking.status !== "Cancelled");
@@ -1007,7 +1029,7 @@ function renderMessages() {
     ? state.users.find(user => user.id === active.requesterId) || { name: active.requesterName || "Student", id: active.requesterId }
     : state.users.find(user => user.id === active.mentorId) || { name: active.mentorName || "Mentor", id: active.mentorId });
   const convoPanel = active && partner
-    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2>${presenceMarkup(partner)}<p>${safe(active.topic)} · Connected</p></div><div class="message-header-actions"><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="audio" aria-label="Start audio call">Audio call</button><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="video" aria-label="Start video call">Video call</button><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div></div><div class="message-list" id="message-list">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><label class="message-attach-button" for="message-attachment" title="Attach a file" aria-label="Attach a file">＋</label><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
+    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2>${presenceMarkup(partner)}<p>${safe(active.topic)} · Connected</p></div><div class="message-header-actions"><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="audio" aria-label="Start audio call">Audio call</button><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="video" aria-label="Start video call">Video call</button><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div></div><div class="message-list" id="message-list" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text" tabindex="0">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><button class="message-attach-button" type="button" data-trigger-attachment aria-label="Attach a file"><span aria-hidden="true">＋</span></button><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt" aria-hidden="true" tabindex="-1"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
     : `<section class="panel"><div class="panel-body"><div class="empty-state"><strong>Select a connection to message.</strong>Start a mentor session request to connect with another member.</div></div></section>`;
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A conversation can start anywhere</div><h1>Messages</h1><p>Message students and mentors after you connect through a session request.</p></div></div><div class="messages-layout"><section class="panel conversation-panel"><div class="panel-heading"><h2>Connections</h2></div><div class="conversation-list">${conversations.length ? conversations.map(booking => {
     const name = state.user.role === "Mentor" ? booking.requesterName || "Student" : booking.mentorName || "Mentor";
@@ -1048,8 +1070,16 @@ function render() {
   const views = { discover: renderDiscover, sessions: renderSessions, profile: renderProfile, member: renderMemberProfile, messages: renderMessages, admin: renderAdmin };
   const labels = { discover: "Discover people", sessions: "My sessions", profile: "My profile", member: "Community profile", messages: "Messages", admin: "Admin" };
   document.getElementById("crumb-label").textContent = labels[state.view] || labels.discover;
-  document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.view === state.view));
+  document.querySelector(".skip-link").setAttribute("href", document.getElementById("auth-root").classList.contains("active") ? "#auth-root" : "#main-content");
+  document.querySelectorAll(".nav-link").forEach(button => {
+    const active = button.dataset.view === state.view;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   viewContainer.innerHTML = (views[state.view] || renderDiscover)();
+  const pageHeading = viewContainer.querySelector("h1");
+  if (pageHeading) document.title = `${pageHeading.textContent.trim()} — MentorshipMatch`;
   updateShell();
   updateNotificationMenu();
   navigationOwnerId = state.user.id || navigationOwnerId;
@@ -1065,12 +1095,53 @@ function render() {
     logTestError("Page state save", error);
   }
 }
+function focusPageHeading() {
+  const heading = viewContainer.querySelector("h1");
+  if (!heading) return;
+  heading.tabIndex = -1;
+  heading.focus();
+}
+function setMobileNavigation(open) {
+  const sidebar = document.getElementById("sidebar");
+  const button = document.getElementById("mobile-menu");
+  const isMobile = window.matchMedia("(max-width: 760px)").matches;
+  const shouldHideSidebar = isMobile && !open;
+  sidebar.classList.toggle("open", isMobile && open);
+  sidebar.setAttribute("aria-hidden", String(shouldHideSidebar));
+  sidebar.toggleAttribute("inert", shouldHideSidebar);
+  button.setAttribute("aria-expanded", String(isMobile && open));
+  button.setAttribute("aria-label", isMobile && open ? "Close navigation" : "Open navigation");
+  if (shouldHideSidebar && sidebar.contains(document.activeElement)) button.focus();
+}
+function setModalBackgroundHidden(hidden) {
+  const shouldHide = hidden || Boolean(callSession);
+  for (const element of [document.querySelector(".app-shell"), document.getElementById("auth-root")]) {
+    if (!element) continue;
+    if (shouldHide) {
+      element.setAttribute("aria-hidden", "true");
+      element.toggleAttribute("inert", true);
+    } else {
+      element.removeAttribute("aria-hidden");
+      element.toggleAttribute("inert", false);
+    }
+  }
+}
 function openModal(title, subtitle, body) {
-  modalRoot.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><div><h2 id="modal-title">${title}</h2><p>${subtitle}</p></div><button class="modal-close" data-close-modal aria-label="Close">×</button></header><div class="modal-body">${body}</div></section>`;
+  if (!modalRoot.classList.contains("open")) modalReturnFocus = document.activeElement;
+  modalRoot.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-description"><header class="modal-header"><div><h2 id="modal-title">${title}</h2><p id="modal-description">${subtitle}</p></div><button class="modal-close" type="button" data-close-modal aria-label="Close dialog">×</button></header><div class="modal-body">${body}</div></section>`;
+  setModalBackgroundHidden(true);
   modalRoot.classList.add("open"); modalRoot.setAttribute("aria-hidden", "false");
   modalRoot.querySelector("[data-close-modal]").focus();
 }
-function closeModal() { modalRoot.classList.remove("open"); modalRoot.setAttribute("aria-hidden", "true"); modalRoot.innerHTML = ""; }
+function closeModal() {
+  modalRoot.classList.remove("open");
+  modalRoot.setAttribute("aria-hidden", "true");
+  modalRoot.innerHTML = "";
+  setModalBackgroundHidden(false);
+  const returnFocus = modalReturnFocus;
+  modalReturnFocus = null;
+  if (returnFocus?.isConnected) returnFocus.focus();
+}
 function deleteMemberData(member) {
   state.users = state.users.filter(user => user.id !== member.id);
   authUsers = authUsers.filter(user => user.id !== member.id);
@@ -1085,12 +1156,12 @@ function deleteMemberData(member) {
   state.reports = state.reports.filter(report => report.userId !== member.id);
 }
 function confirmAccountDeletion(member, ownAccount = false) {
-  openModal("Delete this account?", "Your account will be deactivated now and permanently deleted after 24 hours. Sign in within that time to restore it.", `<div class="modal-form"><p style="font-size:12px;color:#656a60;line-height:1.6;margin:0">Account: <strong>${safe(member.name)}</strong>${member.email ? ` (${safe(member.email)})` : ""}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep account</button><button class="button-danger" type="button" ${ownAccount ? "data-delete-own" : `data-confirm-delete="${safe(member.id)}"`}>Delete account</button></div></div>`);
+  openModal("Delete this account?", "Your account will be deactivated now and permanently deleted after 24 hours. Sign in within that time to restore it.", `<div class="modal-form"><p style="font-size:15px;color:#656a60;line-height:1.6;margin:0">Account: <strong>${safe(member.name)}</strong>${member.email ? ` (${safe(member.email)})` : ""}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep account</button><button class="button-danger" type="button" ${ownAccount ? "data-delete-own" : `data-confirm-delete="${safe(member.id)}"`}>Delete account</button></div></div>`);
 }
 function confirmSessionDeletion(bookingId) {
   const booking = state.bookings.find(item => item.id === bookingId);
   if (!booking) return;
-  openModal("Delete this session?", "This permanently removes the session and its messages for both participants.", `<div class="modal-form"><p style="font-size:12px;color:#656a60;line-height:1.6;margin:0"><strong>${safe(booking.topic)}</strong> · ${safe(booking.date)} at ${safe(booking.time)}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep session</button><button class="button-danger" type="button" data-confirm-delete-session="${safe(booking.id)}">Delete session</button></div></div>`);
+  openModal("Delete this session?", "This permanently removes the session and its messages for both participants.", `<div class="modal-form"><p style="font-size:15px;color:#656a60;line-height:1.6;margin:0"><strong>${safe(booking.topic)}</strong> · ${safe(booking.date)} at ${safe(booking.time)}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep session</button><button class="button-danger" type="button" data-confirm-delete-session="${safe(booking.id)}">Delete session</button></div></div>`);
 }
 function openBooking(mentorId) {
   if (state.user.role !== "Student") {
@@ -1104,25 +1175,30 @@ function openBooking(mentorId) {
     <div class="field"><label for="booking-topic">What would you like to talk about?</label><input id="booking-topic" name="topic" required maxlength="70" placeholder="e.g. Getting started in product design"></div>
     <div class="field-grid"><div class="field"><label for="booking-date">A date that works</label><input id="booking-date" name="date" type="date" min="${today}" required></div><div class="field"><label for="booking-time">Preferred time</label><input id="booking-time" name="time" type="time" step="60" required></div></div>
     <div class="field"><label for="booking-format">How would you like to meet?</label><select name="format" id="booking-format"><option>Video call</option><option>Chat</option></select></div>
-    <div class="field"><label for="booking-note">A note for ${safe(mentor.name.split(" ")[0])} <span style="color:#999;font-weight:400">(optional)</span></label><textarea id="booking-note" name="note" maxlength="300" placeholder="Share a little context or a question you'd love to explore..."></textarea></div>
+    <div class="field"><label for="booking-note">A note for ${safe(mentor.name.split(" ")[0])} <span style="color:#7a7a7a;font-weight:400">(optional)</span></label><textarea id="booking-note" name="note" maxlength="300" placeholder="Share a little context or a question you'd love to explore..."></textarea></div>
     <div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Maybe later</button><button class="button-primary" type="submit">Send request ↗</button></div></form>`);
 }
 function openReview(mentorId) {
   const mentor = state.users.find(item => item.id === mentorId && item.role === "Mentor"); if (!mentor) return;
-  openModal("How did it go?", `Your feedback helps ${mentor.name.split(" ")[0]} and future mentees.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="review-form" data-mentor="${mentor.id}"><div class="field"><label>Your rating</label><div class="modal-rating" role="radiogroup" aria-label="Rating">${[1,2,3,4,5].map(num => `<button type="button" data-rating="${num}" aria-label="${num} star${num > 1 ? "s" : ""}">★</button>`).join("")}</div><input type="hidden" name="rating" required></div><div class="field"><label for="review-text">What would you like others to know?</label><textarea id="review-text" name="text" maxlength="300" required placeholder="What made this conversation meaningful?"></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Share review</button></div></form>`);
+  openModal("How did it go?", `Your feedback helps ${mentor.name.split(" ")[0]} and future mentees.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="review-form" data-mentor="${mentor.id}"><fieldset class="field rating-field"><legend>Your rating</legend><div class="modal-rating">${[1,2,3,4,5].map(num => `<label class="rating-option"><input class="visually-hidden" type="radio" name="rating" value="${num}" aria-label="${num} star${num > 1 ? "s" : ""}" required><span aria-hidden="true">★</span></label>`).join("")}</div></fieldset><div class="field"><label for="review-text">What would you like others to know?</label><textarea id="review-text" name="text" maxlength="300" required placeholder="What made this conversation meaningful?"></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Share review</button></div></form>`);
 }
 function openAppReview() {
-  openModal("Review the app", "Your feedback is private to the admin team and associated with your account.", `<form class="modal-form" id="app-review-form"><div class="field"><label>Your rating</label><div class="modal-rating" role="radiogroup" aria-label="App rating">${[1,2,3,4,5].map(num => `<button type="button" data-rating="${num}" aria-label="${num} star${num > 1 ? "s" : ""}">★</button>`).join("")}</div><input type="hidden" name="rating" required></div><div class="field"><label for="app-review-comment">What could we improve?</label><textarea id="app-review-comment" name="comment" maxlength="1000" placeholder="Share any thoughts about your experience..."></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Send private feedback</button></div></form>`);
+  openModal("Review the app", "Your feedback is private to the admin team and associated with your account.", `<form class="modal-form" id="app-review-form"><fieldset class="field rating-field"><legend>Your rating</legend><div class="modal-rating">${[1,2,3,4,5].map(num => `<label class="rating-option"><input class="visually-hidden" type="radio" name="rating" value="${num}" aria-label="${num} star${num > 1 ? "s" : ""}" required><span aria-hidden="true">★</span></label>`).join("")}</div></fieldset><div class="field"><label for="app-review-comment">What could we improve?</label><textarea id="app-review-comment" name="comment" maxlength="1000" placeholder="Share any thoughts about your experience..."></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Send private feedback</button></div></form>`);
 }
 function showAuth(mode = "login") {
   document.querySelector(".app-shell").style.display = "none";
   const authRoot = document.getElementById("auth-root");
   authRoot.classList.add("active");
+  document.querySelector(".skip-link").setAttribute("href", "#auth-root");
   const isSignup = mode === "signup";
   const recentAccountList = !isSignup && recentAccounts.length
     ? `<div class="recent-accounts"><p>Switch to a recently used account</p>${recentAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>`
     : "";
-  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h1>There's more than one way to get where you're going.</h1><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h2>${isSignup ? "Create your account" : "Good to see you again."}</h2><p>${isSignup ? "Your next conversation could open a new door." : "Sign in within 24 hours of requesting deletion to restore your account."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span>→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div>${recentAccountList}<div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
+  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h2>There's more than one way to get where you're going.</h2><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape" aria-hidden="true"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h1>${isSignup ? "Create your account" : "Good to see you again."}</h1><p>${isSignup ? "Your next conversation could open a new door." : "Sign in within 24 hours of requesting deletion to restore your account."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span aria-hidden="true">→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div>${recentAccountList}<div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
+  const authHeading = authRoot.querySelector("h1");
+  authHeading.tabIndex = -1;
+  authHeading.focus();
+  document.title = `${authHeading.textContent.trim()} — MentorshipMatch`;
   document.querySelector("[data-auth-switch]").addEventListener("click", () => showAuth(isSignup ? "login" : "signup"));
 }
 async function switchRecentAccount(userId) {
@@ -1219,12 +1295,17 @@ document.addEventListener("click", async event => {
     target.hidden = true;
     return;
   }
+  if (target.hasAttribute("data-trigger-attachment")) {
+    target.closest("#message-form").querySelector("#message-attachment").click();
+    return;
+  }
   if (target.id === "notifications") { toggleNotificationMenu(); return; }
   if (target.hasAttribute("data-notification-message")) {
     closeNotificationMenu();
     state.activeConversationId = target.dataset.notificationMessage;
     state.view = "messages";
     render();
+    focusPageHeading();
     syncConversation(state.activeConversationId);
     return;
   }
@@ -1233,6 +1314,7 @@ document.addEventListener("click", async event => {
     state.profileId = target.dataset.notificationMentor;
     state.view = "member";
     render();
+    focusPageHeading();
     return;
   }
   if (target.dataset.view) {
@@ -1245,7 +1327,12 @@ document.addEventListener("click", async event => {
         return;
       }
     }
-    closeModal(); state.view = target.dataset.view; render(); document.getElementById("sidebar").classList.remove("open"); return;
+    closeModal();
+    state.view = target.dataset.view;
+    render();
+    setMobileNavigation(false);
+    focusPageHeading();
+    return;
   }
   if (target.hasAttribute("data-admin-refresh")) {
     target.disabled = true;
@@ -1289,11 +1376,12 @@ document.addEventListener("click", async event => {
     }
     return;
   }
-  if (target.hasAttribute("data-profile")) { state.profileId = target.dataset.profile; state.view = "member"; render(); return; }
+  if (target.hasAttribute("data-profile")) { state.profileId = target.dataset.profile; state.view = "member"; render(); focusPageHeading(); return; }
   if (target.hasAttribute("data-message")) {
     state.activeConversationId = target.dataset.message;
     state.view = "messages";
     render();
+    focusPageHeading();
     syncConversation(state.activeConversationId);
     return;
   }
@@ -1376,12 +1464,7 @@ document.addEventListener("click", async event => {
     }
     return;
   }
-  if (target.hasAttribute("data-rating")) {
-    const form = target.closest("form"); const rating = Number(target.dataset.rating);
-    form.querySelector('[name="rating"]').value = rating;
-    form.querySelectorAll("[data-rating]").forEach(button => button.classList.toggle("selected", Number(button.dataset.rating) <= rating)); return;
-  }
-  if (target.hasAttribute("data-scroll-mentors")) { document.getElementById("mentor-section").scrollIntoView({ behavior: "smooth" }); return; }
+  if (target.hasAttribute("data-scroll-mentors")) { document.getElementById("mentor-section").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); return; }
   if (target.hasAttribute("data-profile-edit")) { document.getElementById("profile-name").focus(); return; }
   if (target.id === "account-button") {
     const otherAccounts = recentAccounts.filter(account => account.id !== state.user.id);
@@ -1459,13 +1542,21 @@ document.addEventListener("input", event => {
   if (event.target.id === "mentor-search") { state.query = event.target.value; const cursor = event.target.selectionStart; render(); const input = document.getElementById("mentor-search"); input.focus(); input.setSelectionRange(cursor, cursor); }
 });
 document.addEventListener("change", event => {
+  if (event.target.matches('input[type="radio"][name="rating"]')) {
+    const rating = Number(event.target.value);
+    event.target.closest("fieldset").querySelectorAll(".rating-option").forEach((option, index) => {
+      option.classList.toggle("selected", index < rating);
+    });
+  }
   if (event.target.id === "community-role") {
     state.memberType = event.target.value;
     render();
+    document.getElementById("community-role").focus();
   }
   if (event.target.id === "mentor-sort") {
     state.mentorSort = event.target.value;
     render();
+    document.getElementById("mentor-sort").focus();
   }
   if (event.target.id === "message-attachment" && event.target.files?.[0]) {
     const file = event.target.files[0];
@@ -1552,7 +1643,7 @@ document.addEventListener("submit", async event => {
       return;
     }
     state.bookings.push(booking);
-    persist(); closeModal(); state.view = "sessions"; render(); showToast("Your session request is on its way!"); return;
+    persist(); closeModal(); state.view = "sessions"; render(); focusPageHeading(); showToast("Your session request is on its way!"); return;
   }
   if (form.id === "review-form") {
     const data = new FormData(form); const rating = Number(data.get("rating"));
@@ -1783,10 +1874,21 @@ document.addEventListener("submit", async event => {
       submitButton.disabled = false;
     }
     state.user.email = email;
-    persist(); document.getElementById("auth-root").classList.remove("active"); document.querySelector(".app-shell").style.display = ""; render(); showToast(accountRestored ? "Your account has been restored. Welcome back!" : "You're in. Welcome to the community!");
+    persist(); document.getElementById("auth-root").classList.remove("active"); document.querySelector(".app-shell").style.display = ""; render(); focusPageHeading(); showToast(accountRestored ? "Your account has been restored. Welcome back!" : "You're in. Welcome to the community!");
   }
 });
-document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
+document.getElementById("mobile-menu").addEventListener("click", () => {
+  const isOpen = document.getElementById("mobile-menu").getAttribute("aria-expanded") === "true";
+  setMobileNavigation(!isOpen);
+  if (!isOpen) document.querySelector("#sidebar [data-view]")?.focus();
+});
+setMobileNavigation(false);
+const mobileNavigationMedia = window.matchMedia("(max-width: 760px)");
+if (typeof mobileNavigationMedia.addEventListener === "function") {
+  mobileNavigationMedia.addEventListener("change", () => setMobileNavigation(false));
+} else {
+  mobileNavigationMedia.addListener(() => setMobileNavigation(false));
+}
 modalRoot.addEventListener("click", event => {
   if (event.target === modalRoot) {
     if (modalRoot.querySelector("#experience-poll-form")) {
@@ -1800,13 +1902,36 @@ document.addEventListener("touchstart", recordPollActivity, { passive: true });
 document.addEventListener("keydown", recordPollActivity);
 document.addEventListener("input", recordPollActivity);
 document.addEventListener("keydown", event => {
+  const openDialog = modalRoot.classList.contains("open")
+    ? modalRoot.querySelector('[role="dialog"]')
+    : callRoot.querySelector('[role="dialog"]');
+  if (event.key === "Tab" && openDialog) {
+    const focusable = [...openDialog.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+      .filter(element => !element.hidden && element.getClientRects().length);
+    if (!focusable.length) {
+      event.preventDefault();
+      openDialog.focus();
+    } else if (event.shiftKey && (document.activeElement === focusable[0] || !openDialog.contains(document.activeElement))) {
+      event.preventDefault();
+      focusable[focusable.length - 1].focus();
+    } else if (!event.shiftKey && (document.activeElement === focusable[focusable.length - 1] || !openDialog.contains(document.activeElement))) {
+      event.preventDefault();
+      focusable[0].focus();
+    }
+  }
   if (event.key === "Escape" && modalRoot.classList.contains("open")) {
+    event.preventDefault();
     if (modalRoot.querySelector("#experience-poll-form")) {
       pollSnoozedUntilActivityMs = pollActiveMs + pollSnoozeDurationMs;
     }
     closeModal();
+  } else if (event.key === "Escape" && !document.getElementById("notification-menu").hidden) {
+    closeNotificationMenu();
+    document.getElementById("notifications").focus();
+  } else if (event.key === "Escape" && document.getElementById("mobile-menu").getAttribute("aria-expanded") === "true") {
+    setMobileNavigation(false);
+    document.getElementById("mobile-menu").focus();
   }
-  if (event.key === "Escape") closeNotificationMenu();
 });
 render();
 if (normalizeEmail(savedUser.email) && authToken) {

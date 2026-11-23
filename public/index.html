@@ -13,26 +13,27 @@
     <script defer src="/_vercel/insights/script.js"></script>
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
     <div class="app-shell">
-      <aside class="sidebar" id="sidebar">
+      <aside class="sidebar" id="sidebar" aria-label="Workspace navigation">
         <a class="brand" href="#" aria-label="MentorshipMatch home">
-          <span class="brand-mark"><span></span><span></span><span></span></span>
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
           <span>mentorship<span class="brand-light">match</span></span>
         </a>
         <div class="workspace-label">YOUR SPACE</div>
         <nav class="main-nav" aria-label="Main navigation">
-          <button class="nav-link active" data-view="discover"><span class="nav-icon">⌕</span>Community</button>
-          <button class="nav-link" data-view="sessions"><span class="nav-icon">▣</span>My sessions <span class="nav-count" id="session-count">0</span></button>
-          <button class="nav-link" data-view="messages"><span class="nav-icon">▤</span>Messages<span class="notification-dot"></span></button>
+          <button class="nav-link active" data-view="discover"><span class="nav-icon" aria-hidden="true">⌕</span>Community</button>
+          <button class="nav-link" data-view="sessions"><span class="nav-icon" aria-hidden="true">▣</span>My sessions <span class="nav-count" id="session-count">0</span></button>
+          <button class="nav-link" data-view="messages"><span class="nav-icon" aria-hidden="true">▤</span>Messages<span class="notification-dot" aria-hidden="true"></span></button>
         </nav>
         <div class="workspace-label second-label">PERSONAL</div>
         <nav class="main-nav" aria-label="Personal navigation">
-          <button class="nav-link" data-view="profile"><span class="nav-icon">◉</span>My profile</button>
-          <button class="nav-link" id="admin-nav-link" data-view="admin" hidden><span class="nav-icon">⚙</span>Admin</button>
+          <button class="nav-link" data-view="profile"><span class="nav-icon" aria-hidden="true">◉</span>My profile</button>
+          <button class="nav-link" id="admin-nav-link" data-view="admin" hidden><span class="nav-icon" aria-hidden="true">⚙</span>Admin</button>
         </nav>
         <div class="sidebar-bottom">
           <div class="sidebar-note">
-            <div class="note-spark">✳</div>
+            <div class="note-spark" aria-hidden="true">✳</div>
             <strong>Small steps add up.</strong>
             <p>One conversation can change your whole perspective.</p>
             <button class="note-link" data-view="discover">Find your person <span>↗</span></button>
@@ -40,17 +41,17 @@
         </div>
       </aside>
 
-      <main class="main-content">
+      <main class="main-content" id="main-content" tabindex="-1">
         <header class="topbar">
-          <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
-          <div class="breadcrumb">Your space <span>/</span> <strong id="crumb-label">Discover mentors</strong></div>
+          <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+          <nav class="breadcrumb" aria-label="Breadcrumb"><span>Your space</span><span aria-hidden="true">/</span><strong id="crumb-label" aria-current="page">Discover mentors</strong></nav>
           <div class="topbar-actions">
             <div class="notification-menu-wrap">
               <button class="icon-button notification-button" aria-label="Notifications" id="notifications" aria-expanded="false" aria-controls="notification-menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><i id="notification-indicator" hidden></i></button>
               <section class="notification-menu" id="notification-menu" aria-label="Notifications" hidden></section>
             </div>
             <span class="topbar-divider"></span>
-            <button class="topbar-user" id="account-button" aria-label="Account menu" aria-haspopup="dialog"><span class="avatar avatar-you">YN</span><span class="topbar-user-copy"><span id="topbar-name">Your name</span><small id="account-role">Student account</small></span><span class="chevron">⌄</span></button>
+            <button class="topbar-user" id="account-button" aria-haspopup="dialog" aria-controls="modal-root"><span class="avatar avatar-you" aria-hidden="true">YN</span><span class="topbar-user-copy"><span id="topbar-name">Your name</span><small id="account-role">Student account</small></span><span class="chevron" aria-hidden="true">⌄</span></button>
           </div>
         </header>
         <div id="view-container"></div>
@@ -59,7 +60,7 @@
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div class="modal-backdrop" id="modal-root" aria-hidden="true"></div>
     <div id="call-root"></div>
-    <div id="auth-root"></div>
+    <div id="auth-root" role="main" tabindex="-1"></div>
     <script src="site.js"></script>
   </body>
 </html>
