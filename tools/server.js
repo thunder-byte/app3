@@ -578,8 +578,19 @@ function readJson(request, maxBytes = maxRequestBytes) {
   });
 }
 
-function publicAccount(account) {
+function bookingQuestionsForAccount(account) {
+  if (!Array.isArray(account.bookingQuestions)) return [];
+  return account.bookingQuestions.slice(0, 10).flatMap(question => {
+    if (!question || typeof question.text !== "string" || typeof question.required !== "boolean") return [];
+    const text = question.text.trim();
+    return text && text.length <= 250 ? [{ text, required: question.required }] : [];
+  });
+}
+
+function publicAccount(account, includeDisabledBookingQuestions = false) {
   const lastSeenAt = Date.parse(account.lastSeenAt || "");
+  const bookingQuestionsEnabled = account.role === "Mentor" &&
+    account.bookingQuestionsEnabled === true && bookingQuestionsForAccount(account).length > 0;
   return {
     id: account.id,
     name: account.name,
@@ -592,7 +603,11 @@ function publicAccount(account) {
     status: account.status,
     isOnline: Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt < presenceOnlineWindowMs,
     createdAt: account.createdAt || "",
-    profileImage: account.profileImage || ""
+    profileImage: account.profileImage || "",
+    bookingQuestionsEnabled,
+    bookingQuestions: account.role === "Mentor" && (bookingQuestionsEnabled || includeDisabledBookingQuestions)
+      ? bookingQuestionsForAccount(account)
+      : []
   };
 }
 
@@ -732,6 +747,8 @@ async function handleRegister(request, response) {
     year: "",
     interests: "",
     goal: "",
+    bookingQuestionsEnabled: false,
+    bookingQuestions: [],
     status: "Active",
     createdAt: new Date().toISOString(),
     emailVerified: true,
@@ -779,7 +796,7 @@ async function handleLogin(request, response) {
   await saveAccounts();
   sendJson(response, 200, {
     user: {
-      ...publicAccount(account),
+      ...publicAccount(account, true),
       email: account.email,
       isAdmin: adminEmails.has(String(account.email || "").trim().toLowerCase())
     },
@@ -834,7 +851,8 @@ async function handleRequest(request, response) {
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/accounts") {
-    if (!await authenticatedAccount(request)) {
+    const authenticated = await authenticatedAccount(request);
+    if (!authenticated) {
       sendJson(response, 401, { error: "Please sign in to browse community profiles." });
       return;
     }
@@ -846,7 +864,7 @@ async function handleRequest(request, response) {
     }
     const users = communityAccounts
       .filter(account => account.status === "Active" && !hiddenDemoEmails.has(String(account.email || "").trim().toLowerCase()))
-      .map(publicAccount)
+      .map(account => publicAccount(account, account.id === authenticated.id))
     sendJson(response, 200, { users });
     return;
   }
@@ -1156,8 +1174,36 @@ async function handleRequest(request, response) {
       sendJson(response, 400, { error: "A valid account and name are required." });
       return;
     }
+    const role = body.role === "Mentor" ? "Mentor" : "Student";
+    const hasBookingQuestions = Object.prototype.hasOwnProperty.call(body, "bookingQuestions");
+    const questionInput = hasBookingQuestions ? body.bookingQuestions : bookingQuestionsForAccount(account);
+    if (!Array.isArray(questionInput) || questionInput.length > 10) {
+      sendJson(response, 400, { error: "Add no more than 10 booking questions." });
+      return;
+    }
+    const bookingQuestions = [];
+    for (const question of questionInput) {
+      if (!question || typeof question.text !== "string" || typeof question.required !== "boolean") {
+        sendJson(response, 400, { error: "Each booking question needs text and a required setting." });
+        return;
+      }
+      const text = question.text.trim();
+      if (!text || text.length > 250) {
+        sendJson(response, 400, { error: "Booking questions must be between 1 and 250 characters." });
+        return;
+      }
+      bookingQuestions.push({ text, required: question.required });
+    }
+    const hasEnabledSetting = Object.prototype.hasOwnProperty.call(body, "bookingQuestionsEnabled");
+    const bookingQuestionsEnabled = role === "Mentor" && (hasEnabledSetting
+      ? body.bookingQuestionsEnabled === true
+      : account.bookingQuestionsEnabled === true);
+    if (bookingQuestionsEnabled && !bookingQuestions.length) {
+      sendJson(response, 400, { error: "Add at least one booking question before enabling questions." });
+      return;
+    }
     account.name = name;
-    account.role = body.role === "Mentor" ? "Mentor" : "Student";
+    account.role = role;
     account.school = typeof body.school === "string" ? body.school.trim().slice(0, 150) : "";
     account.year = typeof body.year === "string" ? body.year.slice(0, 50) : "";
     account.interests = typeof body.interests === "string" ? body.interests.trim().slice(0, 500) : "";
@@ -1169,8 +1215,10 @@ async function handleRequest(request, response) {
       return;
     }
     account.profileImage = profileImage;
+    account.bookingQuestionsEnabled = bookingQuestionsEnabled;
+    account.bookingQuestions = bookingQuestions;
     await saveAccounts();
-    sendJson(response, 200, { user: publicAccount(account) });
+    sendJson(response, 200, { user: publicAccount(account, true) });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/account/password") {
@@ -1238,6 +1286,26 @@ async function handleRequest(request, response) {
       sendJson(response, 403, { error: "Only students can request chats with mentors." });
       return;
     }
+    const mentorQuestions = mentor.bookingQuestionsEnabled === true
+      ? bookingQuestionsForAccount(mentor)
+      : [];
+    const submittedAnswers = body.questionAnswers === undefined ? [] : body.questionAnswers;
+    if (!Array.isArray(submittedAnswers) || submittedAnswers.length !== mentorQuestions.length) {
+      sendJson(response, 400, { error: "Answer all required booking questions before requesting a session." });
+      return;
+    }
+    const questionAnswers = [];
+    for (let index = 0; index < mentorQuestions.length; index += 1) {
+      const submitted = submittedAnswers[index];
+      const answer = submitted && typeof submitted.answer === "string" ? submitted.answer.trim() : "";
+      if (!submitted || submitted.questionIndex !== index ||
+          submitted.question !== mentorQuestions[index].text || answer.length > 1000 ||
+          (mentorQuestions[index].required && !answer)) {
+        sendJson(response, 400, { error: "Answer all required booking questions before requesting a session." });
+        return;
+      }
+      questionAnswers.push({ question: mentorQuestions[index].text, answer });
+    }
     const chatRequest = {
       id: typeof body.id === "string" && body.id ? body.id : `booking-${Date.now()}`,
       mentorId,
@@ -1248,6 +1316,7 @@ async function handleRequest(request, response) {
       time: String(body.time || "").slice(0, 20),
       format: String(body.format || "").slice(0, 50),
       note: String(body.note || "").slice(0, 1000),
+      questionAnswers,
       status: "Pending",
       completedBy: [],
       createdAt: new Date().toISOString()

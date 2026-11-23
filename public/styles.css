@@ -247,3 +247,21 @@ h1, h2, h3, p { margin-top: 0; }h1,h2,h3 { font-family: var(--serif); letter-spa
 .notification-item-open:focus-visible { outline: 2px solid #155e8a; outline-offset: 2px; border-radius: 5px; }
 .notification-dismiss { display: grid; flex: 0 0 32px; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #5f665c; font-size: 21px; line-height: 1; cursor: pointer; }
 .notification-dismiss:hover { background: #e9eee4; color: #252922; }
+.booking-question-settings { display: grid; gap: 12px; margin-top: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcf9; }
+.booking-question-settings[hidden],
+.booking-question-settings > button[hidden] { display: none; }
+.booking-question-toggle { display: grid; gap: 5px; }
+.booking-question-toggle > label { display: flex; align-items: flex-start; gap: 9px; font-size: 16px; font-weight: 600; }
+.booking-question-toggle input,
+.booking-question-controls input { flex: 0 0 auto; margin: 4px 0 0; accent-color: var(--green); }
+.booking-question-editor-list { display: grid; gap: 14px; }
+.booking-question-row { margin: 0; }
+.booking-question-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.booking-question-controls > label { display: inline-flex; align-items: flex-start; gap: 7px; color: #50564c; font-size: 15px; }
+.booking-question-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.booking-answer-list { display: grid; gap: 14px; margin: 0; }
+.booking-answer-list > div { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.booking-answer-list > div:last-child { padding-bottom: 0; border-bottom: 0; }
+.booking-answer-list dt { color: #596752; font-size: 15px; font-weight: 700; }
+.booking-answer-list dd { margin: 5px 0 0; color: #343a31; font-size: 16px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.required-indicator { color: #58674d; font-size: 14px; font-weight: 600; }

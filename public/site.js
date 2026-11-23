@@ -97,6 +97,8 @@ const state = {
   notificationMessages: [],
   readMessageIds: readStoredIds(`mm-read-messages-${savedUser.id || ""}`),
   dismissedMessageIds: readStoredIds(`mm-dismissed-messages-${savedUser.id || ""}`),
+  readReminderIds: readStoredIds(`mm-read-reminders-${savedUser.id || ""}`),
+  dismissedReminderIds: readStoredIds(`mm-dismissed-reminders-${savedUser.id || ""}`),
   newMentorNotifications: readStoredIds(`mm-new-mentors-${savedUser.id || ""}`),
   readMentorNotificationIds: readStoredIds(`mm-read-mentors-${savedUser.id || ""}`),
   dismissedMentorNotificationIds: readStoredIds(`mm-dismissed-mentors-${savedUser.id || ""}`),
@@ -153,6 +155,8 @@ function initializeNotificationState() {
   state.notificationMessages = [];
   state.readMessageIds = readStoredIds(`mm-read-messages-${userId}`);
   state.dismissedMessageIds = readStoredIds(`mm-dismissed-messages-${userId}`);
+  state.readReminderIds = readStoredIds(`mm-read-reminders-${userId}`);
+  state.dismissedReminderIds = readStoredIds(`mm-dismissed-reminders-${userId}`);
   state.newMentorNotifications = readStoredIds(`mm-new-mentors-${userId}`);
   state.readMentorNotificationIds = readStoredIds(`mm-read-mentors-${userId}`);
   state.dismissedMentorNotificationIds = readStoredIds(`mm-dismissed-mentors-${userId}`);
@@ -164,6 +168,8 @@ function persistNotificationState() {
   try {
     localStorage.setItem(`mm-read-messages-${notificationOwnerId}`, JSON.stringify(state.readMessageIds));
     localStorage.setItem(`mm-dismissed-messages-${notificationOwnerId}`, JSON.stringify(state.dismissedMessageIds));
+    localStorage.setItem(`mm-read-reminders-${notificationOwnerId}`, JSON.stringify(state.readReminderIds));
+    localStorage.setItem(`mm-dismissed-reminders-${notificationOwnerId}`, JSON.stringify(state.dismissedReminderIds));
     localStorage.setItem(`mm-new-mentors-${notificationOwnerId}`, JSON.stringify(state.newMentorNotifications));
     localStorage.setItem(`mm-read-mentors-${notificationOwnerId}`, JSON.stringify(state.readMentorNotificationIds));
     localStorage.setItem(`mm-dismissed-mentors-${notificationOwnerId}`, JSON.stringify(state.dismissedMentorNotificationIds));
@@ -371,6 +377,8 @@ async function syncConnections() {
       format: request.format,
       note: request.note,
       status: request.status,
+      createdAt: request.createdAt,
+      questionAnswers: Array.isArray(request.questionAnswers) ? request.questionAnswers : [],
       completedBy: Array.isArray(request.completedBy) ? request.completedBy : []
     }));
     const remoteIds = new Set(remoteRequests.map(request => request.id));
@@ -384,6 +392,7 @@ async function syncConnections() {
       if (state.view !== "messages") render();
     }
     if (state.view === "messages" && state.activeConversationId) syncConversation(state.activeConversationId);
+    updateNotificationMenu();
   } catch (error) {
     logTestError("Connections sync", error);
   }
@@ -692,11 +701,42 @@ function notificationTime(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
+function sessionReminderItems() {
+  const now = Date.now();
+  const dismissed = new Set(state.dismissedReminderIds);
+  const offsets = [
+    { type: "day", offset: 24 * 60 * 60 * 1000, title: "Session is tomorrow" },
+    { type: "hour", offset: 60 * 60 * 1000, title: "Session starts in an hour" }
+  ];
+  return state.bookings.flatMap(booking => {
+    if (["Cancelled", "Completed"].includes(booking.status)) return [];
+    const startsAt = new Date(`${booking.date}T${booking.time}`).getTime();
+    if (!Number.isFinite(startsAt) || startsAt <= now) return [];
+    const createdAt = Date.parse(booking.createdAt || "");
+    return offsets.flatMap(reminder => {
+      const id = `${booking.id}:${reminder.type}`;
+      const reminderAt = startsAt - reminder.offset;
+      if (reminderAt > now || (Number.isFinite(createdAt) && createdAt > reminderAt) || dismissed.has(id)) return [];
+      return [{
+        id,
+        type: reminder.type,
+        title: reminder.title,
+        bookingId: booking.id,
+        startsAt,
+        person: state.user.role === "Mentor"
+          ? booking.requesterName || booking.requesterEmail || "your student"
+          : booking.mentorName || "your mentor",
+        topic: booking.topic || "Mentorship session"
+      }];
+    });
+  }).sort((left, right) => left.startsAt - right.startsAt);
+}
 function updateNotificationMenu() {
   const menu = document.getElementById("notification-menu");
   const indicator = document.getElementById("notification-indicator");
   if (!menu || !indicator) return;
   const readMessages = new Set(state.readMessageIds);
+  const readReminders = new Set(state.readReminderIds);
   const dismissedMessages = new Set(state.dismissedMessageIds);
   const readMentors = new Set(state.readMentorNotificationIds);
   const dismissedMentors = new Set(state.dismissedMentorNotificationIds);
@@ -710,11 +750,14 @@ function updateNotificationMenu() {
     .filter(Boolean)
     .slice(-8)
     .reverse();
+  const reminderItems = sessionReminderItems();
   const unreadCount = messageItems.filter(message => !readMessages.has(message.id)).length +
-    mentorItems.filter(mentor => !readMentors.has(mentor.id)).length;
+    mentorItems.filter(mentor => !readMentors.has(mentor.id)).length +
+    reminderItems.filter(reminder => !readReminders.has(reminder.id)).length;
   document.getElementById("notifications")?.setAttribute("aria-label", unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications");
   indicator.hidden = unreadCount === 0;
-  const contents = `<header class="notification-menu-header"><div><h2>Notifications</h2><p>Messages and mentors matched to your interests.</p></div></header>
+  const contents = `<header class="notification-menu-header"><div><h2>Notifications</h2><p>Messages, session reminders, and mentors matched to your interests.</p></div></header>
+    <section class="notification-section"><h3>Session reminders</h3>${reminderItems.length ? reminderItems.map(reminder => `<div class="notification-item ${readReminders.has(reminder.id) ? "read" : "unread"}"><button type="button" class="notification-item-open" data-notification-session="${safe(reminder.bookingId)}"><span class="notification-item-copy"><strong>${safe(reminder.title)}</strong><span>${safe(reminder.person)} · ${safe(reminder.topic)}</span><small>${safe(notificationTime(reminder.startsAt))}</small></span></button><button type="button" class="notification-dismiss" data-dismiss-notification="reminder" data-notification-id="${safe(reminder.id)}" aria-label="Dismiss ${safe(reminder.title.toLowerCase())} for ${safe(reminder.person)}">×</button></div>`).join("") : `<p class="notification-empty">No upcoming session reminders.</p>`}</section>
     <section class="notification-section"><h3>Messages</h3>${messageItems.length ? messageItems.map(message => `<div class="notification-item ${readMessages.has(message.id) ? "read" : "unread"}"><button type="button" class="notification-item-open" data-notification-message="${safe(message.requestId)}"><span class="notification-item-copy"><strong>${safe(message.senderName || "New message")}</strong><span>${safe(String(message.text || "").slice(0, 120))}</span><small>${safe(notificationTime(message.createdAt))}</small></span></button><button type="button" class="notification-dismiss" data-dismiss-notification="message" data-notification-id="${safe(message.id)}" aria-label="Dismiss message notification from ${safe(message.senderName || "New message")}">×</button></div>`).join("") : `<p class="notification-empty">No new messages.</p>`}</section>
     <section class="notification-section"><h3>New mentors for you</h3>${mentorItems.length ? mentorItems.map(mentor => `<div class="notification-item ${readMentors.has(mentor.id) ? "read" : "unread"}"><button type="button" class="notification-item-open" data-notification-mentor="${safe(mentor.id)}"><span class="notification-item-copy"><strong>${safe(mentor.name)} joined</strong><span>Shares your interest in ${safe(matchingInterest(state.user, mentor) || mentor.field || mentor.interests || "your interests")}.</span><small>${safe(notificationTime(mentor.createdAt))}</small></span></button><button type="button" class="notification-dismiss" data-dismiss-notification="mentor" data-notification-id="${safe(mentor.id)}" aria-label="Dismiss mentor notification for ${safe(mentor.name)}">×</button></div>`).join("") : `<p class="notification-empty">We’ll let you know when a new mentor shares your interests.</p>`}</section>`;
   if (menu.innerHTML !== contents) menu.innerHTML = contents;
@@ -725,6 +768,8 @@ function dismissNotification(type, id) {
     state.dismissedMessageIds = [...new Set([...state.dismissedMessageIds, id])].slice(-500);
   } else if (type === "mentor") {
     state.dismissedMentorNotificationIds = [...new Set([...state.dismissedMentorNotificationIds, id])].slice(-100);
+  } else if (type === "reminder") {
+    state.dismissedReminderIds = [...new Set([...state.dismissedReminderIds, id])].slice(-500);
   } else {
     return;
   }
@@ -739,6 +784,7 @@ function toggleNotificationMenu() {
   if (open) {
     state.readMessageIds = [...new Set([...state.readMessageIds, ...state.notificationMessages.map(message => message.id)])].slice(-500);
     state.readMentorNotificationIds = [...new Set([...state.readMentorNotificationIds, ...state.newMentorNotifications])].slice(-100);
+    state.readReminderIds = [...new Set([...state.readReminderIds, ...sessionReminderItems().map(reminder => reminder.id)])].slice(-500);
     persistNotificationState();
   }
   menu.hidden = !open;
@@ -1005,6 +1051,8 @@ function renderSessions() {
       const statusClass = booking.status === "Pending" ? "pending" : booking.status === "Completed" ? "completed" : "";
       const hasMarkedComplete = Array.isArray(booking.completedBy) && booking.completedBy.includes(state.user.id);
       const statusLabel = booking.status === "Completed" ? "Completed" : hasMarkedComplete ? "Waiting for other participant" : booking.status;
+      const hasStudentAnswers = state.user.role === "Mentor" && booking.mentorId === state.user.id &&
+        Array.isArray(booking.questionAnswers) && booking.questionAnswers.length > 0;
       const conversationName = state.user.role === "Mentor"
         ? (booking.requesterName || booking.requesterEmail)
         : (booking.mentorName || "Mentor");
@@ -1012,7 +1060,7 @@ function renderSessions() {
       const displayTime = time
         ? `${Number(time[1]) % 12 || 12}:${time[2]} ${Number(time[1]) < 12 ? "AM" : "PM"}`
         : booking.time;
-      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(displayTime)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${statusLabel}</span><div class="session-actions">${renderSessionActions(booking, hasMarkedComplete)}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button><button class="button-danger" data-delete-session="${safe(booking.id)}">Delete</button></div></article>`;
+      return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(displayTime)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${statusLabel}</span><div class="session-actions">${renderSessionActions(booking, hasMarkedComplete)}${hasStudentAnswers ? `<button class="button-quiet" data-view-booking-answers="${safe(booking.id)}">View student answers</button>` : ""}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button><button class="button-danger" data-delete-session="${safe(booking.id)}">Delete</button></div></article>`;
     }).join("")}</div>` : `<div class="empty-state"><strong>Your calendar has room for a great conversation.</strong>Find a mentor and book your first session.<br><button class="button-primary" style="margin-top:15px" data-view="discover">Browse mentors</button></div>`}</div></section></div>`;
 }
 function renderProfileInterestOptions(interests) {
@@ -1034,6 +1082,44 @@ function renderSelectedProfileInterestOptions(interests) {
   return selectedValues.map(value => value.trim()).filter(Boolean)
     .map(value => `<option value="${safe(value)}" selected>${safe(value)}</option>`).join("");
 }
+function normalizedBookingQuestions(questions) {
+  if (!Array.isArray(questions)) return [];
+  return questions.slice(0, 10)
+    .map(question => ({
+      text: String(question?.text || "").trim().slice(0, 250),
+      required: question?.required !== false
+    }))
+    .filter(question => question.text);
+}
+function bookingQuestionRowsMarkup(questions) {
+  return questions.map((question, index) => `<div class="field booking-question-row" data-booking-question-row>
+    <label for="booking-question-text-${index}">Question ${index + 1}</label>
+    <input id="booking-question-text-${index}" type="text" maxlength="250" required value="${safe(question.text)}" placeholder="What would you like to ask?">
+    <div class="booking-question-controls"><label><input type="checkbox" data-booking-question-required ${question.required ? "checked" : ""}> Required</label><button class="button-quiet" type="button" data-remove-booking-question="${index}" aria-label="Remove question ${index + 1}" ${questions.length <= 1 ? "disabled" : ""}>Remove</button></div>
+  </div>`).join("");
+}
+function updateBookingQuestionRows(form, questions, focusIndex = -1) {
+  form.querySelector(".booking-question-editor-list").innerHTML = bookingQuestionRowsMarkup(questions);
+  form.querySelector("[data-booking-question-count]").textContent = `${questions.length} of 10 questions`;
+  form.querySelector("[data-add-booking-question]").disabled = questions.length >= 10;
+  if (focusIndex >= 0) form.querySelector(`#booking-question-text-${focusIndex}`)?.focus();
+}
+function readBookingQuestionRows(form) {
+  return [...form.querySelectorAll("[data-booking-question-row]")].map(row => ({
+    text: row.querySelector("input[type=text]").value.trim(),
+    required: row.querySelector("[data-booking-question-required]").checked
+  }));
+}
+function openBookingQuestionsEditor() {
+  const savedQuestions = normalizedBookingQuestions(JSON.parse(document.getElementById("booking-questions-data").value || "[]"));
+  const questions = savedQuestions.length ? savedQuestions : [{ text: "", required: true }];
+  openModal("Questions for students", "Students will answer these when requesting a session. Choose which answers are required.", `<form class="modal-form" id="booking-questions-form">
+    <p class="muted-copy">Questions are saved with your profile when you select Save changes.</p>
+    <div class="booking-question-editor-list">${bookingQuestionRowsMarkup(questions)}</div>
+    <div class="booking-question-editor-footer"><span class="muted-copy" data-booking-question-count>${questions.length} of 10 questions</span><button class="button-secondary" type="button" data-add-booking-question>Add a question</button></div>
+    <div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Save questions</button></div>
+  </form>`);
+}
 function renderSelectedProfileInterestChips(interests) {
   const selectedValues = Array.isArray(interests) ? interests : String(interests || "").split(",");
   const values = selectedValues.map(value => value.trim()).filter(Boolean);
@@ -1053,9 +1139,13 @@ function updateProfileInterestControls(interests) {
 }
 function renderProfile() {
   const profileImage = selectedProfileImage || state.user.profileImage || "";
+  const bookingQuestions = normalizedBookingQuestions(state.user.bookingQuestions);
+  const questionsEnabled = state.user.bookingQuestionsEnabled === true;
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A little about you</div><h1>My profile</h1><p>Share your interests and a little about yourself with the community.</p></div></div>
     <div class="profile-layout"><section class="profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar avatar-you profile-picture-preview">${avatarContent(state.user.name, profileImage)}</span><div><h2>${safe(state.user.name)}</h2><p>${safe(state.user.role || "Student")} · Making room for what's next</p></div></div>
-      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#6d7169;font-size:13px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-select">Academic & career interests</label><select id="profile-interest-select" aria-describedby="profile-interests-help"><option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(state.user.interests)}</select><div id="profile-selected-interests" class="profile-interest-list" role="list" aria-label="Selected academic and career interests">${renderSelectedProfileInterestChips(state.user.interests)}</div><select id="profile-interests" name="interests" multiple hidden aria-hidden="true">${renderSelectedProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose an interest from the dropdown to add it. You can remove selected interests below; press Save changes to save your updates.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
+      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#6d7169;font-size:13px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-select">Academic & career interests</label><select id="profile-interest-select" aria-describedby="profile-interests-help"><option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(state.user.interests)}</select><div id="profile-selected-interests" class="profile-interest-list" role="list" aria-label="Selected academic and career interests">${renderSelectedProfileInterestChips(state.user.interests)}</div><select id="profile-interests" name="interests" multiple hidden aria-hidden="true">${renderSelectedProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose an interest from the dropdown to add it. You can remove selected interests below; press Save changes to save your updates.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div>
+      <section class="booking-question-settings" data-mentor-question-settings ${state.user.role === "Mentor" ? "" : "hidden"}><div class="booking-question-toggle"><label for="booking-questions-enabled"><input id="booking-questions-enabled" name="bookingQuestionsEnabled" type="checkbox" value="true" ${questionsEnabled ? "checked" : ""}> Ask students questions when they request a session</label><small class="muted-copy">Configure up to 10 questions. Your changes are saved with your profile.</small></div><input id="booking-questions-data" name="bookingQuestions" type="hidden" value="${safe(JSON.stringify(bookingQuestions))}"><button class="button-secondary" type="button" data-open-booking-questions ${questionsEnabled ? "" : "hidden"}>${bookingQuestions.length ? `Edit questions (${bookingQuestions.length})` : "Set questions"}</button></section>
+      <div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
     </section><aside class="profile-side"><section class="panel"><div class="panel-heading"><h2>Your interests</h2><button class="button-quiet" data-profile-edit>Edit</button></div><div class="panel-body">${(state.user.interests || "").split(",").filter(Boolean).map(item => `<div class="interest-item"><span>${safe(item.trim())}</span><span>↗</span></div>`).join("") || `<span style="font-size:15px;color:#787a72">Add interests to personalize your matches.</span>`}</div></section><section class="panel profile-reviews"><div class="panel-heading"><h2>Reviews about you</h2></div><div class="panel-body">${reviewListMarkup(state.user.id)}</div></section><div class="profile-tip"><strong>Good profiles get great conversations.</strong>Sharing what you're curious about helps mentors show up with ideas made for you.</div></aside></div></div>`;
 }
 function reviewListMarkup(memberId) {
@@ -1238,6 +1328,8 @@ function openBooking(mentorId) {
     return;
   }
   const mentor = state.users.find(item => item.id === mentorId && item.role === "Mentor"); if (!mentor) return;
+  const questions = mentor.bookingQuestionsEnabled === true ? normalizedBookingQuestions(mentor.bookingQuestions) : [];
+  const questionFields = questions.map((question, index) => `<div class="field"><label for="booking-question-${index}">${safe(question.text)}${question.required ? ` <span class="required-indicator">(required)</span>` : ` <span class="muted-copy">(optional)</span>`}</label><textarea id="booking-question-${index}" name="booking-question-${index}" rows="3" maxlength="1000" ${question.required ? "required" : ""}></textarea></div>`).join("");
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   openModal("Let's find a time", `Send ${mentor.name.split(" ")[0]} a session request.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="booking-form" data-mentor="${mentor.id}">
@@ -1245,7 +1337,22 @@ function openBooking(mentorId) {
     <div class="field-grid"><div class="field"><label for="booking-date">A date that works</label><input id="booking-date" name="date" type="date" min="${today}" required></div><div class="field"><label for="booking-time">Preferred time</label><input id="booking-time" name="time" type="time" step="60" required></div></div>
     <div class="field"><label for="booking-format">How would you like to meet?</label><select name="format" id="booking-format"><option>Video call</option><option>Chat</option></select></div>
     <div class="field"><label for="booking-note">A note for ${safe(mentor.name.split(" ")[0])} <span style="color:#7a7a7a;font-weight:400">(optional)</span></label><textarea id="booking-note" name="note" maxlength="300" placeholder="Share a little context or a question you'd love to explore..."></textarea></div>
+    ${questionFields}
     <div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Maybe later</button><button class="button-primary" type="submit">Send request ↗</button></div></form>`);
+}
+function openBookingAnswers(bookingId) {
+  const booking = state.bookings.find(item => item.id === bookingId);
+  if (!booking || state.user.role !== "Mentor" || booking.mentorId !== state.user.id) {
+    showToast("Those student answers are not available.");
+    return;
+  }
+  const answers = Array.isArray(booking.questionAnswers) ? booking.questionAnswers : [];
+  if (!answers.length) {
+    showToast("This session has no booking questions.");
+    return;
+  }
+  const rows = answers.map(item => `<div><dt>${safe(item.question || "Question")}</dt><dd>${safe(item.answer || "No answer provided.")}</dd></div>`).join("");
+  openModal("Student's answers", `${safe(booking.requesterName || "Your student")} shared these responses when requesting the session.`, `<dl class="booking-answer-list">${rows}</dl><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Close</button></div>`);
 }
 function openReview(mentorId) {
   if (!canReviewMentor(mentorId)) return;
@@ -1377,6 +1484,25 @@ document.addEventListener("click", async event => {
     target.closest("#message-form").querySelector("#message-attachment").click();
     return;
   }
+  if (target.hasAttribute("data-open-booking-questions")) {
+    openBookingQuestionsEditor();
+    return;
+  }
+  if (target.hasAttribute("data-add-booking-question") || target.hasAttribute("data-remove-booking-question")) {
+    const form = target.closest("#booking-questions-form");
+    const questions = readBookingQuestionRows(form);
+    let focusIndex = -1;
+    if (target.hasAttribute("data-add-booking-question") && questions.length < 10) {
+      questions.push({ text: "", required: true });
+      focusIndex = questions.length - 1;
+    } else if (target.hasAttribute("data-remove-booking-question") && questions.length > 1) {
+      const removeIndex = Number(target.dataset.removeBookingQuestion);
+      questions.splice(removeIndex, 1);
+      focusIndex = Math.min(removeIndex, questions.length - 1);
+    }
+    updateBookingQuestionRows(form, questions, focusIndex);
+    return;
+  }
   if (target.id === "notifications") { toggleNotificationMenu(); return; }
   if (target.hasAttribute("data-dismiss-notification")) {
     dismissNotification(target.dataset.dismissNotification, target.dataset.notificationId);
@@ -1397,6 +1523,14 @@ document.addEventListener("click", async event => {
     closeNotificationMenu();
     state.profileId = target.dataset.notificationMentor;
     state.view = "member";
+    render();
+    focusPageHeading();
+    return;
+  }
+  if (target.hasAttribute("data-notification-session")) {
+    closeNotificationMenu();
+    state.view = "sessions";
+    state.activeConversationId = "";
     render();
     focusPageHeading();
     return;
@@ -1480,6 +1614,10 @@ document.addEventListener("click", async event => {
   if (target.hasAttribute("data-review")) { openReview(target.dataset.review); return; }
   if (target.hasAttribute("data-delete-session")) {
     confirmSessionDeletion(target.dataset.deleteSession);
+    return;
+  }
+  if (target.hasAttribute("data-view-booking-answers")) {
+    openBookingAnswers(target.dataset.viewBookingAnswers);
     return;
   }
   if (target.hasAttribute("data-confirm-delete-session")) {
@@ -1639,6 +1777,14 @@ document.addEventListener("change", event => {
       option.classList.toggle("selected", index < rating);
     });
   }
+  if (event.target.id === "profile-role") {
+    const settings = document.querySelector("[data-mentor-question-settings]");
+    if (settings) settings.hidden = event.target.value !== "Mentor";
+  }
+  if (event.target.id === "booking-questions-enabled") {
+    const button = document.querySelector("[data-open-booking-questions]");
+    if (button) button.hidden = !event.target.checked;
+  }
   if (event.target.id === "community-role") {
     state.memberType = event.target.value;
     render();
@@ -1711,10 +1857,27 @@ document.addEventListener("submit", async event => {
     }
     return;
   }
+  if (form.id === "booking-questions-form") {
+    const questions = readBookingQuestionRows(form);
+    if (!questions.length || questions.length > 10 || questions.some(question => !question.text)) {
+      showToast("Add between 1 and 10 non-empty questions.");
+      return;
+    }
+    document.getElementById("booking-questions-data").value = JSON.stringify(questions);
+    document.querySelector("[data-open-booking-questions]").textContent = `Edit questions (${questions.length})`;
+    closeModal();
+    return;
+  }
   if (form.id === "booking-form") {
     const data = new FormData(form); const mentor = state.users.find(item => item.id === form.dataset.mentor && item.role === "Mentor" && item.status === "Active");
     if (!mentor) { showToast("That mentor could not be found."); return; }
-    const booking = { id: `booking-${Date.now()}`, mentorId: mentor.id, requesterId: state.user.id, mentorName: mentor.name, requesterEmail: state.user.email, topic: data.get("topic").trim(), date: data.get("date"), time: data.get("time"), format: data.get("format"), note: data.get("note").trim(), status: "Pending", completedBy: [] };
+    const mentorQuestions = mentor.bookingQuestionsEnabled === true ? normalizedBookingQuestions(mentor.bookingQuestions) : [];
+    const questionAnswers = mentorQuestions.map((question, index) => ({
+      questionIndex: index,
+      question: question.text,
+      answer: String(data.get(`booking-question-${index}`) || "").trim()
+    }));
+    const booking = { id: `booking-${Date.now()}`, mentorId: mentor.id, requesterId: state.user.id, mentorName: mentor.name, requesterEmail: state.user.email, topic: data.get("topic").trim(), date: data.get("date"), time: data.get("time"), format: data.get("format"), note: data.get("note").trim(), questionAnswers, status: "Pending", completedBy: [] };
     const submitButton = form.querySelector('button[type="submit"]');
     submitButton.disabled = true;
     try {
@@ -1837,7 +2000,21 @@ document.addEventListener("submit", async event => {
     const ownMember = state.users.find(user => user.id === state.user.id || normalizeEmail(user.email) === normalizeEmail(state.user.email));
     if (emailAlreadyInUse(email, ownMember?.id)) { showToast("That email is already used by another account."); return; }
     const interests = data.getAll("interests").map(value => String(value).trim()).filter(Boolean).join(", ");
-    const updatedProfile = { name: data.get("name").trim(), email, role: data.get("role"), school: data.get("school").trim(), year: data.get("year"), interests, goal: data.get("goal").trim(), field: interests.split(",")[0].trim(), profileImage: selectedProfileImage || state.user.profileImage || "" };
+    let bookingQuestions;
+    try {
+      bookingQuestions = normalizedBookingQuestions(JSON.parse(String(data.get("bookingQuestions") || "[]")));
+    } catch (error) {
+      console.error("Unable to read booking questions", error);
+      showToast("Your booking questions could not be read. Please reopen and save them again.");
+      return;
+    }
+    const bookingQuestionsEnabled = data.get("bookingQuestionsEnabled") === "true" && data.get("role") === "Mentor";
+    if (bookingQuestionsEnabled && !bookingQuestions.length) {
+      showToast("Add at least one question before enabling questions for students.");
+      document.querySelector("[data-open-booking-questions]")?.focus();
+      return;
+    }
+    const updatedProfile = { name: data.get("name").trim(), email, role: data.get("role"), school: data.get("school").trim(), year: data.get("year"), interests, goal: data.get("goal").trim(), field: interests.split(",")[0].trim(), profileImage: selectedProfileImage || state.user.profileImage || "", bookingQuestionsEnabled, bookingQuestions };
     let savedProfile;
     try {
       const response = await fetch("/api/account/profile", {
@@ -1858,9 +2035,9 @@ document.addEventListener("submit", async event => {
     state.user = { ...state.user, ...savedProfile, email };
     selectedProfileImage = state.user.profileImage || "";
     if (ownMember) {
-      Object.assign(ownMember, { name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: state.user.field, profileImage: state.user.profileImage });
+      Object.assign(ownMember, { name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: state.user.field, profileImage: state.user.profileImage, bookingQuestionsEnabled: state.user.bookingQuestionsEnabled, bookingQuestions: state.user.bookingQuestions });
     } else {
-      state.users.push({ id: state.user.id, name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: (state.user.interests || "").split(",")[0].trim(), profileImage: state.user.profileImage, status: "Active" });
+      state.users.push({ id: state.user.id, name: state.user.name, email, role: state.user.role, school: state.user.school, year: state.user.year, interests: state.user.interests, goal: state.user.goal, field: (state.user.interests || "").split(",")[0].trim(), profileImage: state.user.profileImage, bookingQuestionsEnabled: state.user.bookingQuestionsEnabled, bookingQuestions: state.user.bookingQuestions, status: "Active" });
     }
     rememberRecentAccount(state.user, authToken);
     persist(); render(); showToast("Your profile is looking good."); return;
