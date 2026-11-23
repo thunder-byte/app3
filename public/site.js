@@ -96,8 +96,10 @@ const state = {
   bookings: savedBookings.filter(item => !legacyDemoIds.has(item.mentorId)),
   notificationMessages: [],
   readMessageIds: readStoredIds(`mm-read-messages-${savedUser.id || ""}`),
+  dismissedMessageIds: readStoredIds(`mm-dismissed-messages-${savedUser.id || ""}`),
   newMentorNotifications: readStoredIds(`mm-new-mentors-${savedUser.id || ""}`),
   readMentorNotificationIds: readStoredIds(`mm-read-mentors-${savedUser.id || ""}`),
+  dismissedMentorNotificationIds: readStoredIds(`mm-dismissed-mentors-${savedUser.id || ""}`),
   reviews: Object.fromEntries(Object.entries(savedReviews)
     .filter(([mentorId]) => !legacyDemoIds.has(mentorId))
     .map(([mentorId, review]) => [mentorId, Array.isArray(review) ? review : [review]])),
@@ -150,8 +152,10 @@ function initializeNotificationState() {
   notificationOwnerId = userId;
   state.notificationMessages = [];
   state.readMessageIds = readStoredIds(`mm-read-messages-${userId}`);
+  state.dismissedMessageIds = readStoredIds(`mm-dismissed-messages-${userId}`);
   state.newMentorNotifications = readStoredIds(`mm-new-mentors-${userId}`);
   state.readMentorNotificationIds = readStoredIds(`mm-read-mentors-${userId}`);
+  state.dismissedMentorNotificationIds = readStoredIds(`mm-dismissed-mentors-${userId}`);
   knownMentorIds = readStore(`mm-known-mentors-${userId}`, null);
   if (!Array.isArray(knownMentorIds)) knownMentorIds = null;
 }
@@ -159,8 +163,10 @@ function persistNotificationState() {
   if (!notificationOwnerId) return;
   try {
     localStorage.setItem(`mm-read-messages-${notificationOwnerId}`, JSON.stringify(state.readMessageIds));
+    localStorage.setItem(`mm-dismissed-messages-${notificationOwnerId}`, JSON.stringify(state.dismissedMessageIds));
     localStorage.setItem(`mm-new-mentors-${notificationOwnerId}`, JSON.stringify(state.newMentorNotifications));
     localStorage.setItem(`mm-read-mentors-${notificationOwnerId}`, JSON.stringify(state.readMentorNotificationIds));
+    localStorage.setItem(`mm-dismissed-mentors-${notificationOwnerId}`, JSON.stringify(state.dismissedMentorNotificationIds));
     if (knownMentorIds) localStorage.setItem(`mm-known-mentors-${notificationOwnerId}`, JSON.stringify(knownMentorIds));
   } catch (error) {
     console.error("Unable to save notification state", error);
@@ -690,11 +696,15 @@ function updateNotificationMenu() {
   const indicator = document.getElementById("notification-indicator");
   if (!menu || !indicator) return;
   const readMessages = new Set(state.readMessageIds);
+  const dismissedMessages = new Set(state.dismissedMessageIds);
   const readMentors = new Set(state.readMentorNotificationIds);
+  const dismissedMentors = new Set(state.dismissedMentorNotificationIds);
   const messageItems = [...state.notificationMessages]
+    .filter(message => !dismissedMessages.has(message.id))
     .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
     .slice(0, 8);
   const mentorItems = state.newMentorNotifications
+    .filter(id => !dismissedMentors.has(id))
     .map(id => state.users.find(user => user.id === id && user.role === "Mentor" && user.status === "Active"))
     .filter(Boolean)
     .slice(-8)
@@ -704,9 +714,21 @@ function updateNotificationMenu() {
   document.getElementById("notifications")?.setAttribute("aria-label", unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications");
   indicator.hidden = unreadCount === 0;
   const contents = `<header class="notification-menu-header"><div><h2>Notifications</h2><p>Messages and mentors matched to your interests.</p></div></header>
-    <section class="notification-section"><h3>Messages</h3>${messageItems.length ? messageItems.map(message => `<button class="notification-item ${readMessages.has(message.id) ? "read" : "unread"}" data-notification-message="${safe(message.requestId)}"><span class="notification-item-copy"><strong>${safe(message.senderName || "New message")}</strong><span>${safe(String(message.text || "").slice(0, 120))}</span><small>${safe(notificationTime(message.createdAt))}</small></span></button>`).join("") : `<p class="notification-empty">No new messages.</p>`}</section>
-    <section class="notification-section"><h3>New mentors for you</h3>${mentorItems.length ? mentorItems.map(mentor => `<button class="notification-item ${readMentors.has(mentor.id) ? "read" : "unread"}" data-notification-mentor="${safe(mentor.id)}"><span class="notification-item-copy"><strong>${safe(mentor.name)} joined</strong><span>Shares your interest in ${safe(matchingInterest(state.user, mentor) || mentor.field || mentor.interests || "your interests")}.</span><small>${safe(notificationTime(mentor.createdAt))}</small></span></button>`).join("") : `<p class="notification-empty">We’ll let you know when a new mentor shares your interests.</p>`}</section>`;
+    <section class="notification-section"><h3>Messages</h3>${messageItems.length ? messageItems.map(message => `<div class="notification-item ${readMessages.has(message.id) ? "read" : "unread"}"><button type="button" class="notification-item-open" data-notification-message="${safe(message.requestId)}"><span class="notification-item-copy"><strong>${safe(message.senderName || "New message")}</strong><span>${safe(String(message.text || "").slice(0, 120))}</span><small>${safe(notificationTime(message.createdAt))}</small></span></button><button type="button" class="notification-dismiss" data-dismiss-notification="message" data-notification-id="${safe(message.id)}" aria-label="Dismiss message notification from ${safe(message.senderName || "New message")}">×</button></div>`).join("") : `<p class="notification-empty">No new messages.</p>`}</section>
+    <section class="notification-section"><h3>New mentors for you</h3>${mentorItems.length ? mentorItems.map(mentor => `<div class="notification-item ${readMentors.has(mentor.id) ? "read" : "unread"}"><button type="button" class="notification-item-open" data-notification-mentor="${safe(mentor.id)}"><span class="notification-item-copy"><strong>${safe(mentor.name)} joined</strong><span>Shares your interest in ${safe(matchingInterest(state.user, mentor) || mentor.field || mentor.interests || "your interests")}.</span><small>${safe(notificationTime(mentor.createdAt))}</small></span></button><button type="button" class="notification-dismiss" data-dismiss-notification="mentor" data-notification-id="${safe(mentor.id)}" aria-label="Dismiss mentor notification for ${safe(mentor.name)}">×</button></div>`).join("") : `<p class="notification-empty">We’ll let you know when a new mentor shares your interests.</p>`}</section>`;
   if (menu.innerHTML !== contents) menu.innerHTML = contents;
+}
+function dismissNotification(type, id) {
+  if (!id) return;
+  if (type === "message") {
+    state.dismissedMessageIds = [...new Set([...state.dismissedMessageIds, id])].slice(-500);
+  } else if (type === "mentor") {
+    state.dismissedMentorNotificationIds = [...new Set([...state.dismissedMentorNotificationIds, id])].slice(-100);
+  } else {
+    return;
+  }
+  persistNotificationState();
+  updateNotificationMenu();
 }
 function toggleNotificationMenu() {
   const button = document.getElementById("notifications");
@@ -967,18 +989,17 @@ function renderSessions() {
       return `<article class="session-card"><div class="session-date"><b>${date.getDate()}</b><small>${date.toLocaleString("en-US", { month: "short" })}</small></div><div class="session-info"><strong>${safe(conversationName)} · ${safe(booking.topic)}</strong><p>${date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${safe(displayTime)} · ${safe(booking.format)}</p>${state.user.role === "Mentor" && booking.requesterGoal ? `<p>Student about me: ${safe(booking.requesterGoal)}</p>` : ""}</div><span class="status-badge ${statusClass}">${booking.status}</span><div class="session-actions">${booking.status === "Completed" ? state.user.role === "Mentor" ? `<span class="muted-copy">Completed</span>` : `<button class="button-secondary" data-review="${booking.mentorId}">${reviewsFor(booking.mentorId).some(review => review.reviewerId === state.user.id || review.reviewerEmail === state.user.email) ? "Review shared ✓" : "Leave a review"}</button>` : `<button class="button-secondary" data-complete="${booking.id}">Mark complete</button><button class="button-quiet" data-cancel="${booking.id}">Cancel</button>`}<button class="button-quiet" data-message="${safe(booking.id)}">Message</button><button class="button-danger" data-delete-session="${safe(booking.id)}">Delete</button></div></article>`;
     }).join("")}</div>` : `<div class="empty-state"><strong>Your calendar has room for a great conversation.</strong>Find a mentor and book your first session.<br><button class="button-primary" style="margin-top:15px" data-view="discover">Browse mentors</button></div>`}</div></section></div>`;
 }
-function renderProfileInterestOptions(interests, query = "") {
+function renderProfileInterestOptions(interests) {
   const selectedValues = (Array.isArray(interests) ? interests : String(interests || "").split(","))
     .map(value => value.trim())
     .filter(Boolean);
   const selectedSet = new Set(selectedValues.map(value => value.toLocaleLowerCase()));
   const knownValues = new Set(profileInterestOptions.map(value => value.toLocaleLowerCase()));
   const legacyOptions = selectedValues.filter(value => !knownValues.has(value.toLocaleLowerCase()));
-  const normalizedQuery = query.trim().toLocaleLowerCase();
   const options = [
     ...profileInterestOptions.map(value => ({ value, selected: selectedSet.has(value.toLocaleLowerCase()) })),
     ...legacyOptions.map(value => ({ value, selected: true }))
-  ].filter(option => !normalizedQuery || option.value.toLocaleLowerCase().includes(normalizedQuery));
+  ];
   if (!options.length) return `<option disabled>No matching interests</option>`;
   return options.map(option => `<option value="${safe(option.value)}" ${option.selected ? "disabled" : ""}>${safe(option.value)}${option.selected ? " (already added)" : ""}</option>`).join("");
 }
@@ -997,18 +1018,18 @@ function selectedProfileInterests() {
   const select = document.getElementById("profile-interests");
   return [...select.selectedOptions].map(option => option.value);
 }
-function updateProfileInterestControls(interests, query = "") {
+function updateProfileInterestControls(interests) {
   const hiddenSelect = document.getElementById("profile-interests");
   hiddenSelect.innerHTML = renderSelectedProfileInterestOptions(interests);
   const dropdown = document.getElementById("profile-interest-select");
-  dropdown.innerHTML = `<option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(interests, query)}`;
+  dropdown.innerHTML = `<option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(interests)}`;
   document.getElementById("profile-selected-interests").innerHTML = renderSelectedProfileInterestChips(interests);
 }
 function renderProfile() {
   const profileImage = selectedProfileImage || state.user.profileImage || "";
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A little about you</div><h1>My profile</h1><p>Share your interests and a little about yourself with the community.</p></div></div>
     <div class="profile-layout"><section class="profile-card"><div class="profile-banner"></div><div class="profile-header"><span class="avatar avatar-you profile-picture-preview">${avatarContent(state.user.name, profileImage)}</span><div><h2>${safe(state.user.name)}</h2><p>${safe(state.user.role || "Student")} · Making room for what's next</p></div></div>
-      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#6d7169;font-size:13px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-select">Academic & career interests</label><input id="profile-interest-search" type="search" placeholder="Search interests..." aria-label="Search available interests" aria-controls="profile-interest-select"><select id="profile-interest-select" aria-describedby="profile-interests-help"><option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(state.user.interests)}</select><div id="profile-selected-interests" class="profile-interest-list" role="list" aria-label="Selected academic and career interests">${renderSelectedProfileInterestChips(state.user.interests)}</div><select id="profile-interests" name="interests" multiple hidden aria-hidden="true">${renderSelectedProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose an interest from the dropdown to add it. You can remove selected interests below; press Save changes to save your updates.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
+      <form id="profile-form"><div class="field-grid"><div class="field full"><label for="profile-picture">Profile picture</label><input id="profile-picture" type="file" accept="image/jpeg,image/png,image/webp"><small class="muted-copy">Choose a JPG, PNG, or WebP image. It will be resized before saving.</small></div><div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="name" required value="${safe(state.user.name)}"></div><div class="field"><label for="profile-email">Verified email address</label><input id="profile-email" name="email" type="email" readonly value="${safe(state.user.email)}"><small style="color:#6d7169;font-size:13px">Your verified sign-in email can't be changed here.</small></div><div class="field"><label for="profile-role">Account type</label><select id="profile-role" name="role"><option value="Student" ${state.user.role !== "Mentor" ? "selected" : ""}>Student</option><option value="Mentor" ${state.user.role === "Mentor" ? "selected" : ""}>Mentor</option></select></div><div class="field"><label for="profile-school">School</label><input id="profile-school" name="school" value="${safe(state.user.school || "")}" placeholder="e.g. Lincoln High School"></div><div class="field"><label for="profile-year">Year of study</label><select id="profile-year" name="year"><option ${state.user.year === "High school" ? "selected" : ""}>High school</option><option ${state.user.year === "Freshman" ? "selected" : ""}>Freshman</option><option ${state.user.year === "Sophomore" ? "selected" : ""}>Sophomore</option><option ${state.user.year === "Junior" ? "selected" : ""}>Junior</option><option ${state.user.year === "Senior" ? "selected" : ""}>Senior</option><option ${state.user.year === "Graduate" ? "selected" : ""}>Graduate</option></select></div><div class="field full"><label for="profile-interest-select">Academic & career interests</label><select id="profile-interest-select" aria-describedby="profile-interests-help"><option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(state.user.interests)}</select><div id="profile-selected-interests" class="profile-interest-list" role="list" aria-label="Selected academic and career interests">${renderSelectedProfileInterestChips(state.user.interests)}</div><select id="profile-interests" name="interests" multiple hidden aria-hidden="true">${renderSelectedProfileInterestOptions(state.user.interests)}</select><small class="muted-copy" id="profile-interests-help">Choose an interest from the dropdown to add it. You can remove selected interests below; press Save changes to save your updates.</small></div><div class="field full"><label for="profile-goal">About me</label><textarea id="profile-goal" name="goal" rows="5" placeholder="Tell the community a little about yourself, your experience, and what you'd like to share...">${safe(state.user.goal)}</textarea></div></div><div class="modal-actions"><button class="button-primary" type="submit">Save changes</button></div></form>
     </section><aside class="profile-side"><section class="panel"><div class="panel-heading"><h2>Your interests</h2><button class="button-quiet" data-profile-edit>Edit</button></div><div class="panel-body">${(state.user.interests || "").split(",").filter(Boolean).map(item => `<div class="interest-item"><span>${safe(item.trim())}</span><span>↗</span></div>`).join("") || `<span style="font-size:15px;color:#787a72">Add interests to personalize your matches.</span>`}</div></section><section class="panel profile-reviews"><div class="panel-heading"><h2>Reviews about you</h2></div><div class="panel-body">${reviewListMarkup(state.user.id)}</div></section><div class="profile-tip"><strong>Good profiles get great conversations.</strong>Sharing what you're curious about helps mentors show up with ideas made for you.</div></aside></div></div>`;
 }
 function reviewListMarkup(memberId) {
@@ -1285,8 +1306,7 @@ document.addEventListener("click", async event => {
   if (removeInterestButton) {
     const valueToRemove = removeInterestButton.dataset.removeProfileInterest.toLocaleLowerCase();
     const interests = selectedProfileInterests().filter(value => value.toLocaleLowerCase() !== valueToRemove);
-    const search = document.getElementById("profile-interest-search");
-    updateProfileInterestControls(interests, search.value);
+    updateProfileInterestControls(interests);
     document.getElementById("profile-interest-select").focus();
     return;
   }
@@ -1331,6 +1351,12 @@ document.addEventListener("click", async event => {
     return;
   }
   if (target.id === "notifications") { toggleNotificationMenu(); return; }
+  if (target.hasAttribute("data-dismiss-notification")) {
+    dismissNotification(target.dataset.dismissNotification, target.dataset.notificationId);
+    const nextDismissButton = document.querySelector("#notification-menu .notification-dismiss");
+    (nextDismissButton || document.getElementById("notifications")).focus();
+    return;
+  }
   if (target.hasAttribute("data-notification-message")) {
     closeNotificationMenu();
     state.activeConversationId = target.dataset.notificationMessage;
@@ -1564,11 +1590,6 @@ document.addEventListener("click", async event => {
   if (target.id === "notifications") { showToast("You're all caught up — nice work."); }
 });
 document.addEventListener("input", event => {
-  if (event.target.id === "profile-interest-search") {
-    const dropdown = document.getElementById("profile-interest-select");
-    dropdown.innerHTML = `<option value="" selected>Choose an interest to add</option>${renderProfileInterestOptions(selectedProfileInterests(), event.target.value)}`;
-    return;
-  }
   if (event.target.id === "mentor-search") { state.query = event.target.value; const cursor = event.target.selectionStart; render(); const input = document.getElementById("mentor-search"); input.focus(); input.setSelectionRange(cursor, cursor); }
 });
 document.addEventListener("change", event => {
@@ -1576,7 +1597,6 @@ document.addEventListener("change", event => {
     const interests = selectedProfileInterests();
     const selectedValue = event.target.value;
     if (!interests.some(value => value.toLocaleLowerCase() === selectedValue.toLocaleLowerCase())) interests.push(selectedValue);
-    document.getElementById("profile-interest-search").value = "";
     updateProfileInterestControls(interests);
     event.target.focus();
     return;
