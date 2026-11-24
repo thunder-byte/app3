@@ -985,7 +985,7 @@ function mentorCard(mentor) {
     <h3>${safe(mentor.name)}</h3><p class="mentor-role"><strong>${safe(mentor.role)}</strong>${mentor.field ? ` · ${safe(mentor.field)}` : ""}</p>
     <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span>${presenceMarkup(mentor)}</div>
     <p class="mentor-bio">${safe(mentor.goal || mentor.bio || mentor.interests || "This member has shared their profile and preferences.")}</p><div class="tag-list"><span class="tag">${safe(mentor.field || (mentor.interests || "Community member").split(",")[0])}</span></div>
-    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request another chat <span>↗</span></button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Request a chat <span>↗</span></button>` : ""}</div>
+    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Schedule another session <span>↗</span></button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Schedule a session <span>↗</span></button>` : ""}</div>
   </article>`;
 }
 function renderDiscover() {
@@ -1165,7 +1165,7 @@ function renderMemberProfile() {
       <div><strong>School</strong><span>${safe(member.school || "Not shared")}</span></div><div><strong>Year of study</strong><span>${safe(member.year || "Not shared")}</span></div>
       <div class="preference-wide"><strong>Interests</strong><span>${interests.length ? interests.map(safe).join(", ") : "Not shared"}</span></div>
       <div class="preference-wide"><strong>About me</strong><span>${safe(member.goal || "Not shared")}</span></div>
-    </div><div class="profile-actions">${connection ? `<button class="button-secondary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request another chat</button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Request a chat</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
+    </div><div class="profile-actions">${connection ? `<button class="button-secondary" data-message="${safe(connection.id)}">Message ${safe(member.name.split(" ")[0])}</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Schedule another session</button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(member.id)}">Schedule a session</button>` : `<span class="muted-copy">You can message after you connect through a mentor session.</span>`}</div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Reviews</h2><p>Feedback shared by people who connected with ${safe(member.name.split(" ")[0])}.</p></div></div><div class="panel-body">${reviewListMarkup(member.id)}</div></section></div></div>`;
 }
 function messageMarkup(message) {
@@ -1322,23 +1322,43 @@ function confirmSessionDeletion(bookingId) {
   if (!booking) return;
   openModal("Delete this session?", "This permanently removes the session and its messages for both participants.", `<div class="modal-form"><p style="font-size:15px;color:#656a60;line-height:1.6;margin:0"><strong>${safe(booking.topic)}</strong> · ${safe(booking.date)} at ${safe(booking.time)}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep session</button><button class="button-danger" type="button" data-confirm-delete-session="${safe(booking.id)}">Delete session</button></div></div>`);
 }
-function openBooking(mentorId) {
+async function openBooking(mentorId) {
   if (state.user.role !== "Student") {
     showToast("Only students can request chats with mentors.");
     return;
   }
-  const mentor = state.users.find(item => item.id === mentorId && item.role === "Mentor"); if (!mentor) return;
+  let mentor;
+  try {
+    const response = await fetch("/api/accounts", { headers: apiHeaders() });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || `Mentor request failed (HTTP ${response.status}).`);
+    mentor = (payload.users || []).find(item => item.id === mentorId && item.role === "Mentor" && item.status === "Active");
+    if (!mentor) {
+      showToast("That mentor could not be found.");
+      return;
+    }
+    const cachedMentorIndex = state.users.findIndex(item => item.id === mentor.id);
+    if (cachedMentorIndex >= 0) state.users[cachedMentorIndex] = mentor;
+    else state.users.push(mentor);
+  } catch (error) {
+    console.error("Unable to load current mentor scheduling details", error);
+    showToast(error.message || "The mentor's scheduling details could not be loaded.");
+    return;
+  }
   const questions = mentor.bookingQuestionsEnabled === true ? normalizedBookingQuestions(mentor.bookingQuestions) : [];
   const questionFields = questions.map((question, index) => `<div class="field"><label for="booking-question-${index}">${safe(question.text)}${question.required ? ` <span class="required-indicator">(required)</span>` : ` <span class="muted-copy">(optional)</span>`}</label><textarea id="booking-question-${index}" name="booking-question-${index}" rows="3" maxlength="1000" ${question.required ? "required" : ""}></textarea></div>`).join("");
+  const questionSection = questionFields
+    ? `<section class="booking-question-prompt" aria-label="Questions from ${safe(mentor.name)}"><h3>Questions from ${safe(mentor.name.split(" ")[0])}</h3><p class="muted-copy">Please answer these before scheduling your session.</p>${questionFields}</section>`
+    : "";
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  openModal("Let's find a time", `Send ${mentor.name.split(" ")[0]} a session request.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="booking-form" data-mentor="${mentor.id}">
+  openModal("Schedule a session", `Choose a time to meet with ${mentor.name.split(" ")[0]}.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="booking-form" data-mentor="${mentor.id}">
+    ${questionSection}
     <div class="field"><label for="booking-topic">What would you like to talk about?</label><input id="booking-topic" name="topic" required maxlength="70" placeholder="e.g. Getting started in product design"></div>
     <div class="field-grid"><div class="field"><label for="booking-date">A date that works</label><input id="booking-date" name="date" type="date" min="${today}" required></div><div class="field"><label for="booking-time">Preferred time</label><input id="booking-time" name="time" type="time" step="60" required></div></div>
     <div class="field"><label for="booking-format">How would you like to meet?</label><select name="format" id="booking-format"><option>Video call</option><option>Chat</option></select></div>
     <div class="field"><label for="booking-note">A note for ${safe(mentor.name.split(" ")[0])} <span style="color:#7a7a7a;font-weight:400">(optional)</span></label><textarea id="booking-note" name="note" maxlength="300" placeholder="Share a little context or a question you'd love to explore..."></textarea></div>
-    ${questionFields}
-    <div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Maybe later</button><button class="button-primary" type="submit">Send request ↗</button></div></form>`);
+    <div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Maybe later</button><button class="button-primary" type="submit">Send scheduling request ↗</button></div></form>`);
 }
 function openBookingAnswers(bookingId) {
   const booking = state.bookings.find(item => item.id === bookingId);
@@ -1603,7 +1623,17 @@ document.addEventListener("click", async event => {
     syncConversation(state.activeConversationId);
     return;
   }
-  if (target.hasAttribute("data-book")) { openBooking(target.dataset.book); return; }
+  if (target.hasAttribute("data-book")) {
+    target.disabled = true;
+    target.setAttribute("aria-busy", "true");
+    try {
+      await openBooking(target.dataset.book);
+    } finally {
+      target.disabled = false;
+      target.removeAttribute("aria-busy");
+    }
+    return;
+  }
   if (target.hasAttribute("data-close-modal")) {
     if (modalRoot.querySelector("#experience-poll-form")) {
       pollSnoozedUntilActivityMs = pollActiveMs + pollSnoozeDurationMs;
