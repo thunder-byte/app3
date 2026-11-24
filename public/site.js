@@ -913,9 +913,10 @@ function updateShell() {
   document.querySelector(".topbar-user .avatar").innerHTML = avatarContent(state.user.name, state.user.profileImage);
   document.getElementById("session-count").textContent = state.bookings.filter(item => item.status !== "Completed" && item.status !== "Cancelled").length;
   const accountRole = document.getElementById("account-role");
-  if (accountRole) accountRole.textContent = state.user.isAdmin ? "Administrator" : `${state.user.role || "Student"} account`;
+  const isAdmin = state.user.isAdmin === true;
+  if (accountRole) accountRole.textContent = isAdmin ? "Administrator" : `${state.user.role || "Student"} account`;
   const adminLink = document.getElementById("admin-nav-link");
-  if (adminLink) adminLink.hidden = !state.user.isAdmin;
+  if (adminLink) adminLink.hidden = !isAdmin;
 }
 function showToast(message) {
   const toast = document.getElementById("toast");
@@ -1045,14 +1046,15 @@ function mentorCard(mentor) {
     <h3>${safe(mentor.name)}</h3><p class="mentor-role"><strong>${safe(mentor.role)}</strong>${mentor.field ? ` · ${safe(mentor.field)}` : ""}</p>
     <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span>${presenceMarkup(mentor)}</div>
     <p class="mentor-bio">${safe(mentor.goal || mentor.bio || mentor.interests || "This member has shared their profile and preferences.")}</p><div class="tag-list"><span class="tag">${safe(mentor.field || (mentor.interests || "Community member").split(",")[0])}</span></div>
-    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected || canRequestChat ? `<div class="card-footer-actions">${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>` : ""}${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">${connected ? "Schedule" : "Schedule a session"} <span>↗</span></button>` : ""}</div>` : ""}</div>
+    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>` : ""}${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}" aria-label="Schedule a session">Schedule</button>` : ""}</div>
   </article>`;
 }
 function renderDiscover() {
   const activeMembers = state.users.filter(user => user.status === "Active" && user.id !== state.user.id);
   const matches = activeMembers.filter(member =>
     (state.memberType === "all" || member.role === state.memberType) &&
-    matchesMemberSearch(member, state.query)
+    matchesMemberSearch(member, state.query) &&
+    (state.mentorSort !== "recommended" || sharedInterestCount(state.user, member) > 0)
   );
   matches.sort((left, right) => {
     if (state.mentorSort === "name") return left.name.localeCompare(right.name);
@@ -1067,6 +1069,17 @@ function renderDiscover() {
     const rightMatch = sharedInterestCount(state.user, right);
     return rightMatch - leftMatch || left.name.localeCompare(right.name);
   });
+  const hasSearchOrRoleFilter = Boolean(state.query || state.memberType !== "all");
+  const emptyTitle = state.mentorSort === "recommended" && !hasSearchOrRoleFilter
+    ? "No members share your interests yet."
+    : state.query || state.memberType !== "all"
+      ? `No ${state.memberType === "all" ? "matching" : state.memberType.toLocaleLowerCase()} members found.`
+      : "No community profiles yet.";
+  const emptyCopy = state.mentorSort === "recommended" && !hasSearchOrRoleFilter
+    ? "Add interests to your profile or choose Name A–Z to browse everyone."
+    : state.query || state.memberType !== "all"
+      ? `Try changing the search or role filter${state.mentorSort === "recommended" ? ", or choose another sort option" : ""}.`
+      : "Member profiles will appear here once they join the community.";
   return `<div class="view-wrap">
     <section class="hero"><div><div class="eyebrow">A little guidance goes a long way</div><h1>Your future has a friend in it.</h1><p>Meet students and mentors, explore their interests, and connect when you're ready.</p></div><div class="hero-side"><div class="match-pill">✳ &nbsp;<b>${activeMembers.length} members</b> available</div></div></section>
     <section class="featured-banner"><div class="banner-copy"><span class="banner-tag"><span></span> Your next chapter starts here</span><h2>Big dreams. Real people in your corner.</h2><p>A 20-minute conversation could help you see your next step a little more clearly.</p><button class="button-primary" data-scroll-mentors>Explore your matches <span>↓</span></button></div>
@@ -1075,7 +1088,7 @@ function renderDiscover() {
     <section id="mentor-section"><div class="section-heading"><div><h2>Community members</h2><p>Explore member profiles and see what they're interested in.</p></div><button class="button-quiet" data-view="sessions">Your sessions <span>→</span></button></div>
       <div class="filter-row"><label class="search-field"><span aria-hidden="true">⌕</span><input id="mentor-search" type="search" placeholder="Search community members by skill, interest, goal, or phrase..." value="${safe(state.query)}" aria-label="Search community members by any profile detail"></label><label class="sort-control"><span>Show</span><select id="community-role" class="filter-select" aria-label="Filter community members by role"><option value="all" ${state.memberType === "all" ? "selected" : ""}>Everyone</option><option value="Mentor" ${state.memberType === "Mentor" ? "selected" : ""}>Mentors</option><option value="Student" ${state.memberType === "Student" ? "selected" : ""}>Students</option></select></label><label class="sort-control"><span>Sort by</span><select id="mentor-sort" class="filter-select" aria-label="Sort community members"><option value="recommended" ${state.mentorSort === "recommended" ? "selected" : ""}>Recommended</option><option value="name" ${state.mentorSort === "name" ? "selected" : ""}>Name A–Z</option><option value="interest" ${state.mentorSort === "interest" ? "selected" : ""}>Academic interest A–Z</option><option value="newest" ${state.mentorSort === "newest" ? "selected" : ""}>Newest</option><option value="online" ${state.mentorSort === "online" ? "selected" : ""}>Online first</option></select></label>
         <span class="result-count">${matches.length} member${matches.length === 1 ? "" : "s"}</span></div>
-      <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${state.query || state.memberType !== "all" ? `No ${state.memberType === "all" ? "matching" : state.memberType.toLocaleLowerCase()} members found.` : "No community profiles yet."}</strong>${state.query || state.memberType !== "all" ? "Try changing the search or role filter." : "Member profiles will appear here once they join the community."}</div>`}</div>
+      <div class="mentor-grid">${matches.length ? matches.map(mentorCard).join("") : `<div class="empty-state"><strong>${emptyTitle}</strong>${emptyCopy}</div>`}</div>
     </section></div>`;
 }
 function canReviewMentor(mentorId) {
@@ -1292,7 +1305,7 @@ function renderAdmin() {
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">Administrator tools</div><h1>Account management</h1><p>Review member accounts and manage access.</p></div><button class="button-secondary" data-admin-refresh>Refresh</button></div><section class="panel admin-panel"><div class="panel-heading"><div><h2>Accounts</h2><p>${state.adminAccounts.length} account${state.adminAccounts.length === 1 ? "" : "s"}</p></div></div><div class="admin-account-list">${accountRows || `<div class="empty-state"><strong>No accounts yet.</strong>Accounts will appear here after members sign up.</div>`}</div></section><section class="panel admin-polls"><div class="panel-heading"><div><h2>Poll results</h2><p>${safe(pollResults?.poll.question || "Loading poll results...")}</p></div><strong class="poll-total">${pollResults?.totalVotes || 0} responses</strong></div><div class="panel-body">${pollResults?.totalVotes ? `<div class="poll-result-list">${resultRows}</div>` : `<p class="muted-copy">No responses yet. Results show aggregate counts only.</p>`}</div></section><section class="panel admin-polls"><div class="panel-heading"><div><h2>Private app feedback</h2><p>Visible only to administrators.</p></div><strong class="poll-total">${state.adminAppReviews.length} review${state.adminAppReviews.length === 1 ? "" : "s"}</strong></div><div class="panel-body">${appReviewRows ? `<div class="review-list">${appReviewRows}</div>` : `<p class="muted-copy">No app reviews yet.</p>`}</div></section></div>`;
 }
 function render() {
-  if (state.view === "admin" && !state.user.isAdmin) state.view = "discover";
+  if (state.view === "admin" && state.user.isAdmin !== true) state.view = "discover";
   const views = { discover: renderDiscover, sessions: renderSessions, profile: renderProfile, member: renderMemberProfile, messages: renderMessages, admin: renderAdmin };
   const labels = { discover: "Discover people", sessions: "My sessions", profile: "My profile", member: "Community profile", messages: "Messages", admin: "Admin" };
   document.getElementById("crumb-label").textContent = labels[state.view] || labels.discover;
@@ -1646,6 +1659,11 @@ document.addEventListener("click", async event => {
   }
   if (target.dataset.view) {
     if (target.dataset.view === "admin") {
+      if (state.user.isAdmin !== true) {
+        state.view = "discover";
+        render();
+        return;
+      }
       try {
         await syncAdminDashboard();
       } catch (error) {
@@ -2255,7 +2273,7 @@ document.addEventListener("submit", async event => {
         resetPollTracker(state.user.id);
         state.adminPollResults = null;
         syncPollState().catch(error => console.error("Unable to load poll status", error));
-        if (!state.user.isAdmin) state.adminAccounts = [];
+        if (state.user.isAdmin !== true) state.adminAccounts = [];
         selectedProfileImage = state.user.profileImage || "";
         rememberRecentAccount(state.user, authToken);
         initializeNotificationState();
@@ -2344,7 +2362,7 @@ if (normalizeEmail(savedUser.email) && authToken) {
   syncConnections();
   syncNotifications();
   syncCalls();
-  if (state.view === "admin" && state.user.isAdmin) {
+  if (state.view === "admin" && state.user.isAdmin === true) {
     syncAdminDashboard().then(render).catch(error => {
       console.error("Unable to load admin accounts", error);
       state.view = "discover";
