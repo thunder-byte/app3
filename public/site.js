@@ -83,6 +83,7 @@ let navigationOwnerId = savedNavigation?.userId || "";
 const restoreNavigation = savedNavigation && savedNavigation.userId === savedUser.id;
 const messageSyncVersions = new Map();
 const messageSyncInFlight = new Map();
+const conversationHistorySyncs = new Set();
 let presenceSyncTask = Promise.resolve();
 let reviewSyncVersion = 0;
 const state = {
@@ -94,6 +95,7 @@ const state = {
     ? { name: "Your name", email: "", interests: "", goal: "" }
     : savedUser,
   bookings: savedBookings.filter(item => !legacyDemoIds.has(item.mentorId)),
+  hiddenConversationPartnerIds: readStoredIds(`mm-hidden-conversations-${savedUser.id || ""}`),
   notificationMessages: [],
   readMessageIds: readStoredIds(`mm-read-messages-${savedUser.id || ""}`),
   dismissedMessageIds: readStoredIds(`mm-dismissed-messages-${savedUser.id || ""}`),
@@ -113,7 +115,7 @@ const state = {
   reports: savedReports.filter(report => report.title !== "Inappropriate message reported"),
   query: "",
   memberType: "all",
-  mentorSort: "recommended"
+  mentorSort: "name"
 };
 let selectedProfileImage = state.user.profileImage || "";
 let profileImageTask = Promise.resolve();
@@ -160,6 +162,7 @@ function initializeNotificationState() {
   state.newMentorNotifications = readStoredIds(`mm-new-mentors-${userId}`);
   state.readMentorNotificationIds = readStoredIds(`mm-read-mentors-${userId}`);
   state.dismissedMentorNotificationIds = readStoredIds(`mm-dismissed-mentors-${userId}`);
+  state.hiddenConversationPartnerIds = readStoredIds(`mm-hidden-conversations-${userId}`);
   knownMentorIds = readStore(`mm-known-mentors-${userId}`, null);
   if (!Array.isArray(knownMentorIds)) knownMentorIds = null;
 }
@@ -173,21 +176,30 @@ function persistNotificationState() {
     localStorage.setItem(`mm-new-mentors-${notificationOwnerId}`, JSON.stringify(state.newMentorNotifications));
     localStorage.setItem(`mm-read-mentors-${notificationOwnerId}`, JSON.stringify(state.readMentorNotificationIds));
     localStorage.setItem(`mm-dismissed-mentors-${notificationOwnerId}`, JSON.stringify(state.dismissedMentorNotificationIds));
+    localStorage.setItem(`mm-hidden-conversations-${notificationOwnerId}`, JSON.stringify(state.hiddenConversationPartnerIds));
     if (knownMentorIds) localStorage.setItem(`mm-known-mentors-${notificationOwnerId}`, JSON.stringify(knownMentorIds));
   } catch (error) {
     console.error("Unable to save notification state", error);
     logTestError("Notification state save", error);
   }
 }
-function matchingInterest(user, mentor) {
-  const stopWords = new Set(["about", "after", "also", "and", "are", "for", "from", "have", "into", "our", "the", "their", "them", "with", "you"]);
-  const tokens = value => String(value || "")
-    .toLocaleLowerCase()
+function interestTokens(member) {
+  return new Set(`${member.interests || ""},${member.field || ""}`
     .split(/[;,]/)
-    .flatMap(part => part.replace(/[^a-z0-9+#. ]/g, " ").split(/\s+/))
-    .filter(token => token.length > 1 && !stopWords.has(token));
-  const userInterests = new Set(tokens(`${user.interests || ""},${user.field || ""}`));
-  return tokens(`${mentor.interests || ""},${mentor.field || ""}`).find(token => userInterests.has(token)) || "";
+    .map(interest => interest
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9+#. ]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim())
+    .filter(Boolean));
+}
+function matchingInterest(user, mentor) {
+  const userInterests = interestTokens(user);
+  return [...interestTokens(mentor)].find(token => userInterests.has(token)) || "";
+}
+function sharedInterestCount(user, member) {
+  const userInterests = interestTokens(user);
+  return [...interestTokens(member)].filter(token => userInterests.has(token)).length;
 }
 function updatePresence(isOnline = true) {
   if (!authToken || !state.user.id || (isOnline && (document.visibilityState === "hidden" || !navigator.onLine))) {
@@ -634,21 +646,35 @@ async function syncCalls() {
 }
 async function syncConversation(requestId) {
   if (!requestId || !state.user.id) return;
+  requestId = canonicalConversationBooking(requestId)?.id || requestId;
   if (messageSyncInFlight.has(requestId)) return messageSyncInFlight.get(requestId);
   const version = messageSyncVersions.get(requestId) || 0;
   const syncPromise = (async () => {
     try {
-      const url = `/api/messages?requestId=${encodeURIComponent(requestId)}&userId=${encodeURIComponent(state.user.id)}`;
-      const response = await fetch(url, { headers: apiHeaders() });
-      const payload = await readJsonResponse(response);
-      if (!response.ok) throw new Error(payload.error || `Message request failed (HTTP ${response.status}).`);
+      const historyKey = `${state.user.id}:${requestId}`;
+      const relatedRequestIds = conversationBookings(requestId).map(booking => booking.id);
+      const requestIds = [
+        requestId,
+        ...relatedRequestIds.filter(id => id !== requestId && !conversationHistorySyncs.has(`${historyKey}:${id}`))
+      ];
+      const payloads = await Promise.all(requestIds.map(async relatedRequestId => {
+        const url = `/api/messages?requestId=${encodeURIComponent(relatedRequestId)}&userId=${encodeURIComponent(state.user.id)}`;
+        const response = await fetch(url, { headers: apiHeaders() });
+        const payload = await readJsonResponse(response);
+        if (!response.ok) throw new Error(payload.error || `Message request failed (HTTP ${response.status}).`);
+        return { requestId: relatedRequestId, messages: payload.messages || [] };
+      }));
       if (version !== (messageSyncVersions.get(requestId) || 0)) return;
       const merged = new Map((state.messages[requestId] || []).map(message => [message.id, message]));
-      for (const message of payload.messages || []) merged.set(message.id, message);
+      for (const payload of payloads) {
+        for (const message of payload.messages) merged.set(message.id, message);
+        if (payload.requestId !== requestId) conversationHistorySyncs.add(`${historyKey}:${payload.requestId}`);
+      }
       state.messages[requestId] = [...merged.values()].sort((left, right) =>
         left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
       );
-      if (state.view === "messages" && state.activeConversationId === requestId) {
+      if (state.view === "messages" &&
+          (canonicalConversationBooking(state.activeConversationId)?.id || state.activeConversationId) === requestId) {
         markConversationMessagesRead(requestId);
         const list = document.getElementById("message-list");
         if (list) {
@@ -669,7 +695,8 @@ async function syncConversation(requestId) {
   } finally {
     if (messageSyncInFlight.get(requestId) === syncPromise) messageSyncInFlight.delete(requestId);
     if (version !== (messageSyncVersions.get(requestId) || 0) &&
-      state.view === "messages" && state.activeConversationId === requestId) {
+      state.view === "messages" &&
+      (canonicalConversationBooking(state.activeConversationId)?.id || state.activeConversationId) === requestId) {
       syncConversation(requestId);
     }
   }
@@ -958,6 +985,39 @@ function connectionFor(memberId) {
       Boolean(requester?.email && normalizeEmail(requester.email) === normalizeEmail(booking.requesterEmail));
   });
 }
+function conversationPartnerId(booking) {
+  if (!booking) return "";
+  if (state.user.role !== "Mentor") return booking.mentorId || "";
+  return booking.requesterId ||
+    state.users.find(user => normalizeEmail(user.email) === normalizeEmail(booking.requesterEmail))?.id ||
+    (booking.requesterEmail ? `email:${normalizeEmail(booking.requesterEmail)}` : "");
+}
+function conversationBookings(requestId) {
+  const booking = state.bookings.find(item => item.id === requestId && item.status !== "Cancelled");
+  if (!booking) return [];
+  const partnerId = conversationPartnerId(booking);
+  if (!partnerId) return [booking];
+  return state.bookings.filter(item =>
+    item.status !== "Cancelled" && conversationPartnerId(item) === partnerId
+  );
+}
+function canonicalConversationBooking(requestId) {
+  return conversationBookings(requestId).sort((left, right) =>
+    String(left.createdAt || left.id).localeCompare(String(right.createdAt || right.id)) ||
+    left.id.localeCompare(right.id)
+  )[0];
+}
+function uniqueConversations() {
+  const groups = new Map();
+  for (const booking of state.bookings.filter(item => item.status !== "Cancelled")) {
+    const partnerId = conversationPartnerId(booking) || `request:${booking.id}`;
+    const current = groups.get(partnerId);
+    if (!current || String(booking.createdAt || booking.id).localeCompare(String(current.createdAt || current.id)) < 0) {
+      groups.set(partnerId, booking);
+    }
+  }
+  return [...groups.entries()].map(([partnerId, booking]) => ({ partnerId, booking }));
+}
 function matchesMemberSearch(member, query) {
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   if (!terms.length) return true;
@@ -985,7 +1045,7 @@ function mentorCard(mentor) {
     <h3>${safe(mentor.name)}</h3><p class="mentor-role"><strong>${safe(mentor.role)}</strong>${mentor.field ? ` · ${safe(mentor.field)}` : ""}</p>
     <div class="mentor-meta"><span>${isMentor ? "Mentor profile" : "Student profile"}</span>${presenceMarkup(mentor)}</div>
     <p class="mentor-bio">${safe(mentor.goal || mentor.bio || mentor.interests || "This member has shared their profile and preferences.")}</p><div class="tag-list"><span class="tag">${safe(mentor.field || (mentor.interests || "Community member").split(",")[0])}</span></div>
-    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Schedule another session <span>↗</span></button>` : ""}` : canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">Schedule a session <span>↗</span></button>` : ""}</div>
+    <div class="card-footer"><button class="button-quiet" data-profile="${safe(mentor.id)}">View profile</button>${connected || canRequestChat ? `<div class="card-footer-actions">${connected ? `<button class="button-secondary" data-message="${safe(connectionFor(mentor.id).id)}">Message</button>` : ""}${canRequestChat ? `<button class="button-primary" data-book="${safe(mentor.id)}">${connected ? "Schedule" : "Schedule a session"} <span>↗</span></button>` : ""}</div>` : ""}</div>
   </article>`;
 }
 function renderDiscover() {
@@ -1003,8 +1063,8 @@ function renderDiscover() {
       const rightInterests = String(right.interests || right.field || "").toLocaleLowerCase();
       return leftInterests.localeCompare(rightInterests) || left.name.localeCompare(right.name);
     }
-    const leftMatch = matchingInterest(state.user, left) ? 1 : 0;
-    const rightMatch = matchingInterest(state.user, right) ? 1 : 0;
+    const leftMatch = sharedInterestCount(state.user, left);
+    const rightMatch = sharedInterestCount(state.user, right);
     return rightMatch - leftMatch || left.name.localeCompare(right.name);
   });
   return `<div class="view-wrap">
@@ -1182,18 +1242,25 @@ function messageMarkup(message) {
   return `<div class="chat-message ${isMine ? "mine" : ""}"><span>${safe(message.senderName)}</span>${message.text ? `<p>${safe(message.text)}</p>` : ""}${attachmentMarkup}<time datetime="${safe(message.createdAt)}">${new Date(message.createdAt).toLocaleString()}</time>${seen ? `<small aria-label="Seen by recipient"> · Seen</small>` : ""}</div>`;
 }
 function renderMessages() {
-  const conversations = state.bookings.filter(booking => booking.status !== "Cancelled");
-  const active = conversations.find(booking => booking.id === state.activeConversationId);
+  const hiddenPartners = new Set(state.hiddenConversationPartnerIds);
+  const conversations = uniqueConversations()
+    .filter(conversation => !hiddenPartners.has(conversation.partnerId))
+    .map(conversation => conversation.booking);
+  const activeBooking = canonicalConversationBooking(state.activeConversationId);
+  const active = activeBooking && !hiddenPartners.has(conversationPartnerId(activeBooking))
+    ? activeBooking
+    : undefined;
+  if (active && state.activeConversationId !== active.id) state.activeConversationId = active.id;
   const partner = active && (state.user.role === "Mentor"
     ? state.users.find(user => user.id === active.requesterId) || { name: active.requesterName || "Student", id: active.requesterId }
     : state.users.find(user => user.id === active.mentorId) || { name: active.mentorName || "Mentor", id: active.mentorId });
   const convoPanel = active && partner
-    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2>${presenceMarkup(partner)}<p>${safe(active.topic)} · Connected</p></div><div class="message-header-actions"><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="audio" aria-label="Start audio call">Audio call</button><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="video" aria-label="Start video call">Video call</button><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button></div></div><div class="message-list" id="message-list" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text" tabindex="0">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><button class="message-attach-button" type="button" data-trigger-attachment aria-label="Attach a file"><span aria-hidden="true">＋</span></button><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt" aria-hidden="true" tabindex="-1"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
+    ? `<section class="panel message-panel"><div class="panel-heading"><div><h2>${safe(partner.name)}</h2>${presenceMarkup(partner)}<p>${safe(active.topic)} · Connected</p></div><div class="message-header-actions"><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="audio" aria-label="Start audio call">Audio call</button><button class="button-quiet" data-call="${safe(active.id)}" data-call-mode="video" aria-label="Start video call">Video call</button><button class="button-quiet" data-profile="${safe(partner.id)}">View profile</button><button class="button-quiet" data-delete-conversation="${safe(conversationPartnerId(active))}">Delete conversation</button></div></div><div class="message-list" id="message-list" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text" tabindex="0">${(state.messages[active.id] || []).map(messageMarkup).join("") || `<div class="empty-state"><strong>Start the conversation.</strong>Say hello or share a question.</div>`}</div><form class="message-form" id="message-form" data-request="${safe(active.id)}"><input name="text" maxlength="2000" placeholder="Write a message..." aria-label="Message"><button class="message-attach-button" type="button" data-trigger-attachment aria-label="Attach a file"><span aria-hidden="true">＋</span></button><input id="message-attachment" class="message-attachment-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.gif,.jpg,.jpeg,.png,.webp,.csv,.txt" aria-hidden="true" tabindex="-1"><span class="message-attachment-name" id="message-attachment-name" hidden aria-live="polite"></span><button class="message-attachment-clear" type="button" data-remove-attachment hidden aria-label="Remove attachment">×</button><button class="button-primary" type="submit">Send</button><small class="message-attachment-hint">Files up to 3 MB</small></form></section>`
     : `<section class="panel"><div class="panel-body"><div class="empty-state"><strong>Select a connection to message.</strong>Start a mentor session request to connect with another member.</div></div></section>`;
   return `<div class="view-wrap"><div class="content-header"><div><div class="eyebrow">A conversation can start anywhere</div><h1>Messages</h1><p>Message students and mentors after you connect through a session request.</p></div></div><div class="messages-layout"><section class="panel conversation-panel"><div class="panel-heading"><h2>Connections</h2></div><div class="conversation-list">${conversations.length ? conversations.map(booking => {
     const name = state.user.role === "Mentor" ? booking.requesterName || "Student" : booking.mentorName || "Mentor";
     const person = state.users.find(user => user.id === (state.user.role === "Mentor" ? booking.requesterId : booking.mentorId));
-    return `<button class="conversation-choice ${booking.id === state.activeConversationId ? "selected" : ""}" data-message="${safe(booking.id)}"><span class="avatar ${state.user.role === "Mentor" ? "avatar-you" : "avatar-blue"}">${avatarContent(name, person?.profileImage)}</span><span><strong>${safe(name)}</strong><small>${safe(booking.topic)}</small>${presenceMarkup(person)}</span></button>`;
+    return `<button class="conversation-choice ${booking.id === active?.id ? "selected" : ""}" data-message="${safe(booking.id)}"><span class="avatar ${state.user.role === "Mentor" ? "avatar-you" : "avatar-blue"}">${avatarContent(name, person?.profileImage)}</span><span><strong>${safe(name)}</strong><small>${safe(booking.topic)}</small>${presenceMarkup(person)}</span></button>`;
   }).join("") : `<div class="muted-copy conversation-empty">No connections yet. Request a mentor chat to start messaging.</div>`}</div></section>${convoPanel}</div></div>`;
 }
 function renderAdmin() {
@@ -1322,6 +1389,32 @@ function confirmSessionDeletion(bookingId) {
   if (!booking) return;
   openModal("Delete this session?", "This permanently removes the session and its messages for both participants.", `<div class="modal-form"><p style="font-size:15px;color:#656a60;line-height:1.6;margin:0"><strong>${safe(booking.topic)}</strong> · ${safe(booking.date)} at ${safe(booking.time)}</p><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep session</button><button class="button-danger" type="button" data-confirm-delete-session="${safe(booking.id)}">Delete session</button></div></div>`);
 }
+function confirmConversationDeletion(partnerId) {
+  const conversation = uniqueConversations().find(item => item.partnerId === partnerId);
+  if (!conversation) return;
+  const partner = state.users.find(user => user.id === partnerId);
+  const name = partner?.name ||
+    (state.user.role === "Mentor" ? conversation.booking.requesterName : conversation.booking.mentorName) ||
+    "this person";
+  openModal("Delete this conversation?", `${safe(name)}'s conversation will be hidden from your Messages list. Its history stays saved and returns if you message them again.`, `<div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Keep conversation</button><button class="button-danger" type="button" data-confirm-delete-conversation="${safe(partnerId)}">Delete conversation</button></div>`);
+}
+function openConversation(requestId) {
+  const booking = canonicalConversationBooking(requestId);
+  if (!booking) {
+    showToast("That conversation could not be found.");
+    return;
+  }
+  const partnerId = conversationPartnerId(booking);
+  if (state.hiddenConversationPartnerIds.includes(partnerId)) {
+    state.hiddenConversationPartnerIds = state.hiddenConversationPartnerIds.filter(id => id !== partnerId);
+    persistNotificationState();
+  }
+  state.activeConversationId = booking.id;
+  state.view = "messages";
+  render();
+  focusPageHeading();
+  syncConversation(booking.id);
+}
 async function openBooking(mentorId) {
   if (state.user.role !== "Student") {
     showToast("Only students can request chats with mentors.");
@@ -1380,7 +1473,7 @@ function openReview(mentorId) {
   openModal("How did it go?", `Your feedback helps ${mentor.name.split(" ")[0]} and future mentees.`, `<div class="modal-mentor"><span class="mentor-avatar avatar-blue">${initials(mentor.name)}</span><span><strong>${safe(mentor.name)}</strong><p>Mentor · ${safe(mentor.field)}</p></span></div><form class="modal-form" id="review-form" data-mentor="${mentor.id}"><fieldset class="field rating-field"><legend>Your rating</legend><div class="modal-rating">${[1,2,3,4,5].map(num => `<label class="rating-option"><input class="visually-hidden" type="radio" name="rating" value="${num}" aria-label="${num} star${num > 1 ? "s" : ""}" required><span aria-hidden="true">★</span></label>`).join("")}</div></fieldset><div class="field"><label for="review-text">What would you like others to know?</label><textarea id="review-text" name="text" maxlength="300" required placeholder="What made this conversation meaningful?"></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Share review</button></div></form>`);
 }
 function openAppReview() {
-  openModal("Review the app", "Your feedback is private to the admin team and associated with your account.", `<form class="modal-form" id="app-review-form"><fieldset class="field rating-field"><legend>Your rating</legend><div class="modal-rating">${[1,2,3,4,5].map(num => `<label class="rating-option"><input class="visually-hidden" type="radio" name="rating" value="${num}" aria-label="${num} star${num > 1 ? "s" : ""}" required><span aria-hidden="true">★</span></label>`).join("")}</div></fieldset><div class="field"><label for="app-review-comment">What could we improve?</label><textarea id="app-review-comment" name="comment" maxlength="1000" placeholder="Share any thoughts about your experience..."></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Send private feedback</button></div></form>`);
+  openModal("Give Feedback", "Your feedback is private to the admin team and associated with your account.", `<form class="modal-form" id="app-review-form"><fieldset class="field rating-field"><legend>Your rating</legend><div class="modal-rating">${[1,2,3,4,5].map(num => `<label class="rating-option"><input class="visually-hidden" type="radio" name="rating" value="${num}" aria-label="${num} star${num > 1 ? "s" : ""}" required><span aria-hidden="true">★</span></label>`).join("")}</div></fieldset><div class="field"><label for="app-review-comment">What could we improve?</label><textarea id="app-review-comment" name="comment" maxlength="1000" placeholder="Share any thoughts about your experience..."></textarea></div><div class="modal-actions"><button class="button-secondary" type="button" data-close-modal>Cancel</button><button class="button-primary" type="submit">Send private feedback</button></div></form>`);
 }
 function showAuth(mode = "login") {
   document.querySelector(".app-shell").style.display = "none";
@@ -1391,7 +1484,7 @@ function showAuth(mode = "login") {
   const recentAccountList = !isSignup && recentAccounts.length
     ? `<div class="recent-accounts"><p>Switch to a recently used account</p>${recentAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>`
     : "";
-  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><span class="brand-mark"><span></span><span></span><span></span></span><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h2>There's more than one way to get where you're going.</h2><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape" aria-hidden="true"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h1>${isSignup ? "Create your account" : "Good to see you again."}</h1><p>${isSignup ? "Your next conversation could open a new door." : "Sign in within 24 hours of requesting deletion to restore your account."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span aria-hidden="true">→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div>${recentAccountList}<div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
+  authRoot.innerHTML = `<div class="auth-screen"><section class="auth-art"><a class="brand auth-logo" href="#"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="20" height="20" fill="rgba(255,255,255,.55)" stroke="#4b704e" stroke-width="2" /><rect x="11" y="11" width="20" height="20" fill="rgba(255,255,255,.55)" stroke="#4b704e" stroke-width="2" /><path d="M1 1 31 31" fill="none" stroke="#4b704e" stroke-width="2" /></svg><span>mentorship<span class="brand-light">match</span></span></a><div class="auth-art-content"><span class="eyebrow">A good place to begin</span><h2>There's more than one way to get where you're going.</h2><p>Find people who'll listen, share what they know, and cheer you on along the way.</p></div><div class="auth-shape" aria-hidden="true"></div></section><section class="auth-form-wrap"><form class="auth-form" id="auth-form"><div class="eyebrow">${isSignup ? "Make yourself at home" : "Welcome back"}</div><h1>${isSignup ? "Create your account" : "Good to see you again."}</h1><p>${isSignup ? "Your next conversation could open a new door." : "Sign in within 24 hours of requesting deletion to restore it."}</p>${isSignup ? `<div class="field"><label for="auth-name">Your name</label><input id="auth-name" name="name" required placeholder="Your name"></div>` : ""}<div class="field"><label for="auth-email">Email address</label><input id="auth-email" name="email" type="email" required placeholder="you@example.com"></div><div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" minlength="8" autocomplete="${isSignup ? "new-password" : "current-password"}" required placeholder="At least 8 characters"></div>${isSignup ? `<div class="field"><label for="auth-role">I’m here as a...</label><select id="auth-role" name="role"><option>Student</option><option>Mentor</option></select></div>` : ""}<button class="button-primary" type="submit">${isSignup ? "Create my account" : "Sign in"} <span aria-hidden="true">→</span></button><div id="auth-feedback" class="auth-feedback" hidden></div>${recentAccountList}<div class="auth-switch">${isSignup ? "Already have an account?" : "New to MentorshipMatch?"} <button type="button" data-auth-switch>${isSignup ? "Sign in" : "Create an account"}</button></div></form></section></div>`;
   const authHeading = authRoot.querySelector("h1");
   authHeading.tabIndex = -1;
   authHeading.focus();
@@ -1532,11 +1625,7 @@ document.addEventListener("click", async event => {
   }
   if (target.hasAttribute("data-notification-message")) {
     closeNotificationMenu();
-    state.activeConversationId = target.dataset.notificationMessage;
-    state.view = "messages";
-    render();
-    focusPageHeading();
-    syncConversation(state.activeConversationId);
+    openConversation(target.dataset.notificationMessage);
     return;
   }
   if (target.hasAttribute("data-notification-mentor")) {
@@ -1614,13 +1703,25 @@ document.addEventListener("click", async event => {
     }
     return;
   }
+  if (target.hasAttribute("data-delete-conversation")) {
+    confirmConversationDeletion(target.dataset.deleteConversation);
+    return;
+  }
+  if (target.hasAttribute("data-confirm-delete-conversation")) {
+    const partnerId = target.dataset.confirmDeleteConversation;
+    state.hiddenConversationPartnerIds = [...new Set([...state.hiddenConversationPartnerIds, partnerId])];
+    persistNotificationState();
+    if (conversationPartnerId(canonicalConversationBooking(state.activeConversationId)) === partnerId) {
+      state.activeConversationId = "";
+    }
+    closeModal();
+    render();
+    showToast("Conversation removed from Messages. Its history is saved.");
+    return;
+  }
   if (target.hasAttribute("data-profile")) { state.profileId = target.dataset.profile; state.view = "member"; render(); focusPageHeading(); return; }
   if (target.hasAttribute("data-message")) {
-    state.activeConversationId = target.dataset.message;
-    state.view = "messages";
-    render();
-    focusPageHeading();
-    syncConversation(state.activeConversationId);
+    openConversation(target.dataset.message);
     return;
   }
   if (target.hasAttribute("data-book")) {
@@ -1725,7 +1826,7 @@ document.addEventListener("click", async event => {
   if (target.hasAttribute("data-profile-edit")) { document.getElementById("profile-name").focus(); return; }
   if (target.id === "account-button") {
     const otherAccounts = recentAccounts.filter(account => account.id !== state.user.id);
-    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-secondary" data-change-password>Change password</button><button class="button-secondary" data-app-review>Review the app</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
+    openModal("Your account", "Manage your MentorshipMatch account.", `<div class="modal-form"><div class="modal-mentor"><span class="avatar avatar-you">${avatarContent(state.user.name, state.user.profileImage)}</span><span><strong>${safe(state.user.name)}</strong><p>${safe(state.user.email)} · ${safe(state.user.role || "Student")}</p></span></div><button class="button-secondary" data-view="profile">Edit your profile</button><button class="button-secondary" data-change-password>Change password</button><button class="button-secondary" data-app-review>Give Feedback</button>${otherAccounts.length ? `<div class="recent-accounts"><p>Switch account</p>${otherAccounts.map(account => `<button type="button" class="recent-account" data-switch-account="${safe(account.id)}"><span class="avatar avatar-you">${avatarContent(account.user.name, account.user.profileImage)}</span><span><strong>${safe(account.user.name || account.user.email)}</strong><small>${safe(account.user.email)}</small></span></button>`).join("")}</div>` : ""}<button class="button-quiet" data-logout>Sign out</button><button class="button-danger" data-request-delete-own>Delete my account</button></div>`); return;
   }
   if (target.hasAttribute("data-app-review")) { openAppReview(); return; }
   if (target.hasAttribute("data-change-password")) {
