@@ -98,7 +98,7 @@ h1, h2, h3, p { margin-top: 0; }h1,h2,h3 { font-family: var(--serif); letter-spa
 .admin-account-row { display: grid; grid-template-columns: minmax(150px,1.4fr) minmax(80px,.5fr) minmax(110px,.7fr) minmax(180px,1fr); align-items: center; gap: 12px; padding: 13px 18px; border-bottom: 1px solid #f0f0ec; }
 .admin-account-row:last-child { border-bottom: 0; }
 .admin-account-person { display: grid; gap: 4px; min-width: 0; }
-.card-footer > button[data-message] + button[data-book] { margin-left: 2px; }
+.card-footer > button[data-message] + button[data-book] { margin-left: 4px; }
 .admin-account-person strong { font-size: 15px; overflow-wrap: anywhere; }
 .admin-account-person span,.admin-account-actions small { color: #6a6e66; font-size: 14px; overflow-wrap: anywhere; }
 .admin-account-role { color: #656a60; font-size: 14px; }
